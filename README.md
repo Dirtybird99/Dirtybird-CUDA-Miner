@@ -3,7 +3,8 @@
 CUDA **AstroBWTv3** miner for **DERO** — a GPU implementation of the recovered ("astronv-class")
 fast path, with a **0% dev fee**.
 
-**Status:** v0.1.0 · NVIDIA GPU (CUDA, `sm_86` / `sm_89` / `sm_90`) · Linux + Windows-via-WSL2
+**Status:** v0.1.1 · NVIDIA GPU (CUDA, `sm_86` / `sm_89` / `sm_90`) · Linux + Windows-via-WSL2
+(experimental arm64 / HiveOS)
 
 - **Beats astronv on the same hardware.** On an RTX 4070 Laptop it sustains **~12.7–13.0 KH/s live**,
   vs the closed astronv miner's ~12.53 KH/s — and at **0% fee** vs astronv's 4.9%, so your net
@@ -94,17 +95,25 @@ stay below it.
 
 ## Releases
 
-Tagged releases are published on the [Releases page](../../releases), each with a packaged binary
-(`linux-amd64` tarball + a `windows-wsl` zip), `SHA256SUMS.txt`, and the source archives. Release
-binaries are built for **`sm_89` (Ada / RTX 40-series)** and are compiled in CI **without a GPU**, so
-verify correctness on your card before relying on one:
+Tagged releases are on the [Releases page](../../releases). CI builds the binaries on GitHub runners
+**without a GPU**, so verify correctness on your card before relying on one:
 
 ```bash
-./bin/openastronv_v3 --verify-recovered-gpu-parity
+./openastronv_v3 --verify-recovered-gpu-parity
 ```
 
-Broader GPU-arch coverage and a HiveOS/MMPOS package are planned for a later version. To cut a
-release: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+| asset | platform | status |
+|---|---|---|
+| `…-linux-amd64-<tag>.tar.gz` | Linux x86-64 (Ada `sm_89`) | ✅ verified (RTX 4070, parity-green) |
+| `…-windows-wsl-<tag>.zip` | Windows via WSL2 (same Linux binary) | ✅ verified |
+| `…-linux-arm64-<tag>.tar.gz` | NVIDIA arm64 — Jetson Orin `sm_87` + GH200 `sm_90` | ⚠️ experimental, build-only |
+| `dirtybird-cuda-miner-<tag>.hiveos_mmpos.amd64.tar.gz` | HiveOS / MMPOS custom miner | ⚠️ experimental (log-parsed stats) |
+| `SHA256SUMS.txt` + Source code (zip/tar.gz) | — | ✅ |
+
+**macOS is not supported** — Apple has no CUDA and no NVIDIA GPUs. The arm64 and HiveOS assets are
+built without hardware to verify them, so treat them as experimental (the arm64 asset appears only if
+its build job succeeds). To cut a release: `git tag -a vX.Y.Z -m "…" && git push origin vX.Y.Z`
+(annotated tag).
 
 ## License
 

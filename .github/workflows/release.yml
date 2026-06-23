@@ -9,12 +9,13 @@ permissions:
   contents: write
 
 jobs:
-  release-linux:
+  # ---- amd64: the verified set (Linux x86-64 + Windows-via-WSL + HiveOS package) ----
+  build-amd64:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install CUDA toolkit
+      - name: Install CUDA toolkit (nvcc only; runner has no GPU)
         uses: Jimver/cuda-toolkit@v0.2.21
         with:
           cuda: '12.5.0'
@@ -27,7 +28,7 @@ jobs:
       - name: Build (sm_89; compiled without a GPU on the runner)
         run: SKIP_SELFTEST=1 CUDA_ARCH=sm_89 bash build.sh
 
-      - name: Package
+      - name: Package amd64 + windows-wsl + hiveos
         run: |
           VER="${GITHUB_REF_NAME:-dev}"
           mkdir -p dist
@@ -41,9 +42,78 @@ jobs:
           mkdir -p "dist/${WINP}"
           cp bin/openastronv_v3 README.md LICENSE run-gpu-miner.bat "dist/${WINP}/"
           ( cd dist && zip -r "${WINP}.zip" "${WINP}" >/dev/null )
-          # Checksums over all archives
+          # HiveOS/MMPOS custom-miner package (EXPERIMENTAL). Inner dir must match CUSTOM_NAME.
+          HV="dirtybird-cuda"
+          mkdir -p "dist/${HV}"
+          cp bin/openastronv_v3 README.md LICENSE "dist/${HV}/"
+          cp hiveos/h-manifest.conf hiveos/h-config.sh hiveos/h-run.sh hiveos/h-stats.sh hiveos/mmp-stats.sh "dist/${HV}/"
+          chmod +x "dist/${HV}"/*.sh
+          tar -C dist -czf "dist/dirtybird-cuda-miner-${VER}.hiveos_mmpos.amd64.tar.gz" "${HV}"
+          rm -rf "dist/${LIN}" "dist/${WINP}" "dist/${HV}"
+          echo "=== amd64 artifacts ===" && ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-amd64
+          path: dist/*
+          retention-days: 1
+
+  # ---- arm64: EXPERIMENTAL (Jetson sm_87 + GH200 sm_90). Never blocks the release. ----
+  build-arm64:
+    runs-on: ubuntu-24.04-arm
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CUDA arm64 (sbsa) toolkit + deps
+        run: |
+          set -e
+          curl -fsSLO https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          # Prefer 12.5 to match amd64; fall back to whatever 12.x nvcc/cudart-dev the repo offers.
+          sudo apt-get install -y cuda-nvcc-12-5 cuda-cudart-dev-12-5 libssl-dev zip \
+            || sudo apt-get install -y cuda-nvcc-12-6 cuda-cudart-dev-12-6 libssl-dev zip \
+            || sudo apt-get install -y cuda-toolkit libssl-dev zip
+          echo "/usr/local/cuda/bin" >> "$GITHUB_PATH"
+
+      - name: Build (arm64 fatbin: Jetson sm_87 + GH200 sm_90; no GPU on runner)
+        run: SKIP_SELFTEST=1 CUDA_ARCH=sm_87,sm_90 bash build.sh
+
+      - name: Package arm64
+        run: |
+          VER="${GITHUB_REF_NAME:-dev}"
+          mkdir -p dist
+          ARM="Dirtybird-CUDA-Miner-linux-arm64-${VER}"
+          mkdir -p "dist/${ARM}"
+          cp bin/openastronv_v3 README.md LICENSE THIRD-PARTY-LICENSES.md "dist/${ARM}/"
+          tar -C dist -czf "dist/${ARM}.tar.gz" "${ARM}"
+          rm -rf "dist/${ARM}"
+          echo "=== arm64 artifacts ===" && ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-arm64
+          path: dist/*
+          retention-days: 1
+
+  # ---- combine all artifacts, checksum, publish. Runs as long as amd64 succeeded. ----
+  release:
+    needs: [build-amd64, build-arm64]
+    if: ${{ always() && needs.build-amd64.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect archives + checksums
+        run: |
+          mkdir -p dist
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} dist/ \;
           ( cd dist && sha256sum *.tar.gz *.zip > SHA256SUMS.txt )
-          echo "=== artifacts ===" && ls -la dist
+          echo "=== release assets ===" && ls -la dist && echo "---" && cat dist/SHA256SUMS.txt
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -53,8 +123,22 @@ jobs:
             dist/*.zip
             dist/SHA256SUMS.txt
           generate_release_notes: true
+          body: |
+            CUDA **AstroBWTv3** miner for **DERO** — 0% dev fee. Binaries are built on GitHub runners
+            **without a GPU**, so verify on your card before relying on one:
+            `./openastronv_v3 --verify-recovered-gpu-parity`.
 
-# NOTE: binaries are built sm_89 (Ada / RTX 40-series) and compiled without a GPU on the runner.
+            **Verified assets** (NVIDIA; tested at parity locally on an RTX 4070):
+            - `Dirtybird-CUDA-Miner-linux-amd64-*.tar.gz` — Linux x86-64 (Ada `sm_89`).
+            - `Dirtybird-CUDA-Miner-windows-wsl-*.zip` — same Linux binary, launched on Windows via WSL2.
+
+            **Experimental assets** (build-only — no hardware here to verify; may need tuning):
+            - `Dirtybird-CUDA-Miner-linux-arm64-*.tar.gz` — NVIDIA arm64 (Jetson Orin `sm_87` + GH200
+              `sm_90`). Present only if the arm64 build job succeeded.
+            - `dirtybird-cuda-miner-*.hiveos_mmpos.amd64.tar.gz` — HiveOS/MMPOS custom-miner package
+              (stats are log-parsed; untested on a live rig).
+
+            **Not supported:** macOS — Apple has no CUDA and no NVIDIA GPUs.
+
 # Verify correctness on a CUDA GPU before relying on a release:
 #   bash build.sh && ./bin/openastronv_v3 --verify-recovered-gpu-parity
-# Broader GPU arch coverage and a HiveOS/MMPOS package are planned for a later version.

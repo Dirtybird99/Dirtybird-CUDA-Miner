@@ -965,8 +965,10 @@ static int gpu_autotune_batch(int device_id, GPUEngineMode engine, size_t total_
 static void print_startup_banner(const std::vector<GPUDeviceInfo>& gpus) {
     const char* d = CC(UI_DIM); const char* r = CC(UI_RESET);
     auto line = [&](const std::string& s) { printf("%s%s%s %s\n", d, ts().c_str(), r, s.c_str()); };
+#if defined(__x86_64__) || defined(__i386__)
     __builtin_cpu_init();
     auto yn = [](bool b) { return b ? "Yes" : "No"; };
+#endif
     const std::string sep = "--------------------------------------------";
     const std::string pool = g_config.pool_host + ":" + std::to_string(g_config.pool_port);
     line(sep);
@@ -981,9 +983,15 @@ static void print_startup_banner(const std::vector<GPUDeviceInfo>& gpus) {
     line("| GPU count: " + std::to_string(gpus.size()));
     line(std::string("| ") + CC(UI_GOOD) + "Fee: 0%" + CC(UI_RESET));
     line("| " + cpu_brand());
+#if defined(__x86_64__) || defined(__i386__)
     line(std::string("| avx2: ") + yn(__builtin_cpu_supports("avx2")));
     line(std::string("| avx512: ") + yn(__builtin_cpu_supports("avx512f")));
     line(std::string("| sha: ") + yn(__builtin_cpu_supports("sha")));
+#else
+    line("| avx2: n/a (non-x86)");
+    line("| avx512: n/a (non-x86)");
+    line("| sha: n/a (non-x86)");
+#endif
     line(sep);
     line("Found " + std::to_string(gpus.size()) + " gpus");
     for (const auto& gpu : gpus) {
