@@ -1,0 +1,33 @@
+# Build products
+/bin/
+/obj/
+/build/
+/build-*/
+*.o
+*.obj
+*.a
+*.so
+*.dll
+*.exe
+*.new
+
+# CUDA artifacts
+*.ptx
+*.cubin
+*.fatbin
+
+# Runtime captures / logs
+*.log
+*.out
+*.err
+*.jsonl
+
+# Never commit wallets / databases
+*.db
+wallet.db
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+desktop.ini
+/dist/

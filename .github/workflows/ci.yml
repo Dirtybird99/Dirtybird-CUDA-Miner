@@ -1,0 +1,46 @@
+name: ci
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CUDA toolkit (nvcc only; hosted runners have no GPU)
+        id: cuda
+        uses: Jimver/cuda-toolkit@v0.2.21
+        with:
+          cuda: '12.5.0'
+          method: network
+          sub-packages: '["nvcc", "cudart-dev"]'
+
+      - name: Install OpenSSL dev headers
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev
+
+      - name: Build (compile-only; GPU parity/bench gate is skipped without a GPU)
+        run: SKIP_SELFTEST=1 CUDA_ARCH=sm_89 bash build.sh
+
+      - name: Smoke test (--help; no GPU needed)
+        continue-on-error: true
+        run: LD_LIBRARY_PATH="${CUDA_PATH}/lib64:${LD_LIBRARY_PATH:-}" ./bin/openastronv_v3 --help
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openastronv_v3-linux-x64
+          path: bin/openastronv_v3
+          retention-days: 7
+
+# NOTE: AstroBWTv3 correctness (GPU-vs-CPU-oracle parity) and the hashrate gate require a real
+# NVIDIA GPU, which GitHub-hosted runners do not have. Run the full gate locally / on a self-hosted
+# GPU runner:  bash build.sh   (runs --verify-recovered-gpu-parity + a >=8 KH/s bench before deploy).

@@ -1,0 +1,50 @@
+name: release
+
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.21
+        with:
+          cuda: '12.5.0'
+          method: network
+          sub-packages: '["nvcc", "cudart-dev"]'
+
+      - name: Install OpenSSL dev headers
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev
+
+      - name: Build
+        run: SKIP_SELFTEST=1 CUDA_ARCH=sm_89 bash build.sh
+
+      - name: Package
+        run: |
+          VER="${GITHUB_REF_NAME:-dev}"
+          PKG="Dirtybird-CUDA-Miner-${VER}-linux-x64"
+          mkdir -p "dist/${PKG}"
+          cp bin/openastronv_v3 "dist/${PKG}/"
+          cp README.md LICENSE THIRD-PARTY-LICENSES.md run-gpu-miner.bat "dist/${PKG}/"
+          tar -C dist -czf "dist/${PKG}.tar.gz" "${PKG}"
+          ( cd dist && sha256sum "${PKG}.tar.gz" > SHA256SUMS.txt )
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS.txt
+          generate_release_notes: true
+
+# NOTE: the release binary is built sm_89 (Ada / RTX 40-series) by default and is compiled only
+# (no GPU on hosted runners). Verify correctness locally before tagging:
+#   bash build.sh && ./bin/openastronv_v3 --verify-recovered-gpu-parity
