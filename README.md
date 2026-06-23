@@ -92,6 +92,20 @@ This is the build gate and should be run after any change.
 cliff). Larger batches can trip a slow fallback on this engine; the auto-detect and the default
 stay below it.
 
+## Releases
+
+Tagged releases are published on the [Releases page](../../releases), each with a packaged binary
+(`linux-amd64` tarball + a `windows-wsl` zip), `SHA256SUMS.txt`, and the source archives. Release
+binaries are built for **`sm_89` (Ada / RTX 40-series)** and are compiled in CI **without a GPU**, so
+verify correctness on your card before relying on one:
+
+```bash
+./bin/openastronv_v3 --verify-recovered-gpu-parity
+```
+
+Broader GPU-arch coverage and a HiveOS/MMPOS package are planned for a later version. To cut a
+release: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). Vendored third-party code (libsais, Apache-2.0) is documented in

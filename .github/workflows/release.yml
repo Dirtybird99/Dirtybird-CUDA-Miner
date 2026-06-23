@@ -21,30 +21,40 @@ jobs:
           method: network
           sub-packages: '["nvcc", "cudart-dev"]'
 
-      - name: Install OpenSSL dev headers
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev
+      - name: Install build deps (OpenSSL + zip)
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev zip
 
-      - name: Build
+      - name: Build (sm_89; compiled without a GPU on the runner)
         run: SKIP_SELFTEST=1 CUDA_ARCH=sm_89 bash build.sh
 
       - name: Package
         run: |
           VER="${GITHUB_REF_NAME:-dev}"
-          PKG="Dirtybird-CUDA-Miner-${VER}-linux-x64"
-          mkdir -p "dist/${PKG}"
-          cp bin/openastronv_v3 "dist/${PKG}/"
-          cp README.md LICENSE THIRD-PARTY-LICENSES.md run-gpu-miner.bat "dist/${PKG}/"
-          tar -C dist -czf "dist/${PKG}.tar.gz" "${PKG}"
-          ( cd dist && sha256sum "${PKG}.tar.gz" > SHA256SUMS.txt )
+          mkdir -p dist
+          # Linux amd64
+          LIN="Dirtybird-CUDA-Miner-linux-amd64-${VER}"
+          mkdir -p "dist/${LIN}"
+          cp bin/openastronv_v3 README.md LICENSE THIRD-PARTY-LICENSES.md run-gpu-miner.bat "dist/${LIN}/"
+          tar -C dist -czf "dist/${LIN}.tar.gz" "${LIN}"
+          # Windows (WSL): same Linux binary, launched via WSL by run-gpu-miner.bat
+          WINP="Dirtybird-CUDA-Miner-windows-wsl-${VER}"
+          mkdir -p "dist/${WINP}"
+          cp bin/openastronv_v3 README.md LICENSE run-gpu-miner.bat "dist/${WINP}/"
+          ( cd dist && zip -r "${WINP}.zip" "${WINP}" >/dev/null )
+          # Checksums over all archives
+          ( cd dist && sha256sum *.tar.gz *.zip > SHA256SUMS.txt )
+          echo "=== artifacts ===" && ls -la dist
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/*.tar.gz
+            dist/*.zip
             dist/SHA256SUMS.txt
           generate_release_notes: true
 
-# NOTE: the release binary is built sm_89 (Ada / RTX 40-series) by default and is compiled only
-# (no GPU on hosted runners). Verify correctness locally before tagging:
+# NOTE: binaries are built sm_89 (Ada / RTX 40-series) and compiled without a GPU on the runner.
+# Verify correctness on a CUDA GPU before relying on a release:
 #   bash build.sh && ./bin/openastronv_v3 --verify-recovered-gpu-parity
+# Broader GPU arch coverage and a HiveOS/MMPOS package are planned for a later version.
