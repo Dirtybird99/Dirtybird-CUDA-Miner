@@ -8,6 +8,6 @@ REM  -w wallet with your own DERO address to mine to yourself.
 REM  If your WSL distro is not the default, add: wsl.exe -d <YourDistro> -- ...
 REM ===================================================================
 :loop
-wsl.exe -- bash -lc "exec ~/Dirtybird-CUDA-Miner/bin/openastronv_v3 -d dero.rabidmining.com:10300 -w dero1qyvpht6yfyfm6p896vw3yq32w972unmp63xmfsyehjahj7tplwdmkqqvg95j7 --worker rig4070 --fast-gpu --auto-batch --color always"
+wsl.exe -- bash -lc "exec ~/Dirtybird-CUDA-Miner/bin/openastronv_v3 -d community-pools.mysrv.cloud:10300 -w dero1qyvpht6yfyfm6p896vw3yq32w972unmp63xmfsyehjahj7tplwdmkqqvg95j7 --worker rig4070 --fast-gpu --auto-batch --color always"
 timeout /t 3 >nul
 goto loop

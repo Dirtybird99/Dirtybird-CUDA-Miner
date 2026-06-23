@@ -11,7 +11,7 @@ permissions:
 jobs:
   # ---- amd64: the verified set (Linux x86-64 + Windows-via-WSL + HiveOS package) ----
   build-amd64:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -42,12 +42,18 @@ jobs:
           mkdir -p "dist/${WINP}"
           cp bin/openastronv_v3 README.md LICENSE run-gpu-miner.bat "dist/${WINP}/"
           ( cd dist && zip -r "${WINP}.zip" "${WINP}" >/dev/null )
-          # HiveOS/MMPOS custom-miner package (EXPERIMENTAL). Inner dir must match CUSTOM_NAME.
+          # HiveOS/MMPOS custom-miner package. Inner dir must match CUSTOM_NAME.
           HV="dirtybird-cuda"
           mkdir -p "dist/${HV}"
           cp bin/openastronv_v3 README.md LICENSE "dist/${HV}/"
           cp hiveos/h-manifest.conf hiveos/h-config.sh hiveos/h-run.sh hiveos/h-stats.sh hiveos/mmp-stats.sh "dist/${HV}/"
           chmod +x "dist/${HV}"/*.sh
+          # Bundle runtime libs the rig may lack (CUDA itself is static; the driver supplies libcuda).
+          mkdir -p "dist/${HV}/lib"
+          for L in libssl.so.3 libcrypto.so.3 libstdc++.so.6 libgcc_s.so.1; do
+            P=$(ldd bin/openastronv_v3 | awk -v l="$L" '$1==l {print $3; exit}')
+            [ -n "$P" ] && [ -f "$P" ] && cp -L "$P" "dist/${HV}/lib/" && echo "bundled $L" || echo "WARN: $L missing"
+          done
           tar -C dist -czf "dist/dirtybird-cuda-miner-${VER}.hiveos_mmpos.amd64.tar.gz" "${HV}"
           rm -rf "dist/${LIN}" "dist/${WINP}" "dist/${HV}"
           echo "=== amd64 artifacts ===" && ls -la dist
@@ -60,7 +66,7 @@ jobs:
 
   # ---- arm64: EXPERIMENTAL (Jetson sm_87 + GH200 sm_90). Never blocks the release. ----
   build-arm64:
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-22.04-arm
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -68,7 +74,7 @@ jobs:
       - name: Install CUDA arm64 (sbsa) toolkit + deps
         run: |
           set -e
-          curl -fsSLO https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/cuda-keyring_1.1-1_all.deb
+          curl -fsSLO https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/sbsa/cuda-keyring_1.1-1_all.deb
           sudo dpkg -i cuda-keyring_1.1-1_all.deb
           sudo apt-get update
           # Prefer 12.5 to match amd64; fall back to whatever 12.x nvcc/cudart-dev the repo offers.
@@ -87,6 +93,12 @@ jobs:
           ARM="Dirtybird-CUDA-Miner-linux-arm64-${VER}"
           mkdir -p "dist/${ARM}"
           cp bin/openastronv_v3 README.md LICENSE THIRD-PARTY-LICENSES.md "dist/${ARM}/"
+          # Bundle runtime libs (same as the HiveOS package) so it starts on a bare arm64 rig.
+          mkdir -p "dist/${ARM}/lib"
+          for L in libssl.so.3 libcrypto.so.3 libstdc++.so.6 libgcc_s.so.1; do
+            P=$(ldd bin/openastronv_v3 | awk -v l="$L" '$1==l {print $3; exit}')
+            [ -n "$P" ] && [ -f "$P" ] && cp -L "$P" "dist/${ARM}/lib/" && echo "bundled $L" || echo "WARN: $L missing"
+          done
           tar -C dist -czf "dist/${ARM}.tar.gz" "${ARM}"
           rm -rf "dist/${ARM}"
           echo "=== arm64 artifacts ===" && ls -la dist
@@ -132,13 +144,14 @@ jobs:
             - `Dirtybird-CUDA-Miner-linux-amd64-*.tar.gz` — Linux x86-64 (Ada `sm_89`).
             - `Dirtybird-CUDA-Miner-windows-wsl-*.zip` — same Linux binary, launched on Windows via WSL2.
 
-            **Experimental assets** (build-only — no hardware here to verify; may need tuning):
-            - `Dirtybird-CUDA-Miner-linux-arm64-*.tar.gz` — NVIDIA arm64 (Jetson Orin `sm_87` + GH200
-              `sm_90`). Present only if the arm64 build job succeeded.
-            - `dirtybird-cuda-miner-*.hiveos_mmpos.amd64.tar.gz` — HiveOS/MMPOS custom-miner package
-              (stats are log-parsed; untested on a live rig).
+            **Rig packages** (bundle their runtime libs in `lib/` with an `$ORIGIN/lib` rpath, so they
+            start on a bare rig; built on Ubuntu 22.04 / glibc 2.35):
+            - `dirtybird-cuda-miner-*.hiveos_mmpos.amd64.tar.gz` — HiveOS/MMPOS custom miner (stats verified).
+            - `Dirtybird-CUDA-Miner-linux-arm64-*.tar.gz` — NVIDIA arm64 (Jetson `sm_87` + GH200 `sm_90`);
+              build-only (no arm64 GPU here to verify). Present only if the arm64 build job succeeded.
 
-            **Not supported:** macOS — Apple has no CUDA and no NVIDIA GPUs.
+            **Not supported:** macOS — Apple has no CUDA and no NVIDIA GPUs. Rigs older than glibc 2.35
+            build from source.
 
 # Verify correctness on a CUDA GPU before relying on a release:
 #   bash build.sh && ./bin/openastronv_v3 --verify-recovered-gpu-parity

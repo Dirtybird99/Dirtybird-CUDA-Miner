@@ -3,8 +3,8 @@
 CUDA **AstroBWTv3** miner for **DERO** — a GPU implementation of the recovered ("astronv-class")
 fast path, with a **0% dev fee**.
 
-**Status:** v0.1.1 · NVIDIA GPU (CUDA, `sm_86` / `sm_89` / `sm_90`) · Linux + Windows-via-WSL2
-(experimental arm64 / HiveOS)
+**Status:** v0.1.2 · NVIDIA GPU (CUDA, `sm_86` / `sm_89` / `sm_90`) · Linux + Windows-via-WSL2
+(+ arm64 / HiveOS packages)
 
 - **Beats astronv on the same hardware.** On an RTX 4070 Laptop it sustains **~12.7–13.0 KH/s live**,
   vs the closed astronv miner's ~12.53 KH/s — and at **0% fee** vs astronv's 4.9%, so your net
@@ -106,14 +106,16 @@ Tagged releases are on the [Releases page](../../releases). CI builds the binari
 |---|---|---|
 | `…-linux-amd64-<tag>.tar.gz` | Linux x86-64 (Ada `sm_89`) | ✅ verified (RTX 4070, parity-green) |
 | `…-windows-wsl-<tag>.zip` | Windows via WSL2 (same Linux binary) | ✅ verified |
-| `…-linux-arm64-<tag>.tar.gz` | NVIDIA arm64 — Jetson Orin `sm_87` + GH200 `sm_90` | ⚠️ experimental, build-only |
-| `dirtybird-cuda-miner-<tag>.hiveos_mmpos.amd64.tar.gz` | HiveOS / MMPOS custom miner | ⚠️ experimental (log-parsed stats) |
+| `…-linux-arm64-<tag>.tar.gz` | NVIDIA arm64 — Jetson Orin `sm_87` + GH200 `sm_90` | ⚠️ build-only (no arm64 GPU to verify); bundles runtime libs |
+| `dirtybird-cuda-miner-<tag>.hiveos_mmpos.amd64.tar.gz` | HiveOS / MMPOS custom miner | ✅ stats-verified; bundles runtime libs |
 | `SHA256SUMS.txt` + Source code (zip/tar.gz) | — | ✅ |
 
-**macOS is not supported** — Apple has no CUDA and no NVIDIA GPUs. The arm64 and HiveOS assets are
-built without hardware to verify them, so treat them as experimental (the arm64 asset appears only if
-its build job succeeds). To cut a release: `git tag -a vX.Y.Z -m "…" && git push origin vX.Y.Z`
-(annotated tag).
+The **HiveOS package** and the **arm64 tarball** bundle their runtime libraries
+(`libssl`/`libcrypto`/`libstdc++`) in a `lib/` dir with an `$ORIGIN/lib` rpath, so the binary starts on
+a bare rig without a CUDA toolkit or a matching OpenSSL (CUDA itself is statically linked; the NVIDIA
+driver supplies `libcuda`). Release binaries are built on **Ubuntu 22.04 (glibc 2.35)**; rigs older
+than that should build from source. macOS is not supported (no CUDA / NVIDIA on Apple). To cut a
+release: `git tag -a vX.Y.Z -m "…" && git push origin vX.Y.Z` (annotated tag).
 
 ## License
 

@@ -6,7 +6,7 @@ cd "$(dirname "$(readlink -f "$0")")" || exit 1
 
 # Community defaults (used when the flight sheet leaves a field empty). Change %WAL% in the
 # flight sheet to mine to your own DERO wallet.
-DEF_URL="dero.rabidmining.com:10300"
+DEF_URL="community-pools.mysrv.cloud:10300"
 DEF_WALLET="dero1qyvpht6yfyfm6p896vw3yq32w972unmp63xmfsyehjahj7tplwdmkqqvg95j7"
 
 URL="${CUSTOM_URL:-$DEF_URL}"

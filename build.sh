@@ -38,6 +38,7 @@ echo "[2/3] nvcc link (slow) -> $TMP  (arch=$ARCH, cuda=$CUDA_ROOT)"
   src/main.cpp src/gpu/astrobwt_gpu.cu obj/libsais.o \
   -L"$CUDA_ROOT/lib" -L"$CUDA_ROOT/lib64" -L"$CUDA_TGT/lib" \
   -lssl -lcrypto \
+  -Xlinker -rpath -Xlinker '$ORIGIN/lib' \
   -o "$TMP" 2>&1 | tail -30
 rc=${PIPESTATUS[0]}
 if [ "$rc" -ne 0 ] || [ ! -x "$TMP" ]; then echo "BUILD_FAIL_NVCC rc=$rc"; rm -f "$TMP"; exit 1; fi
