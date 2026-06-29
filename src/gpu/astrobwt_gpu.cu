@@ -474,14 +474,6 @@ __global__ void astrobwt_branch_compute_kernel(uint8_t* __restrict__ d_sdata_out
     if (lane == 0) { uint8_t* last_chunk = &sData[(tries - 1) * 256]; int dlen = (tries - 4) * 256 + (((last_chunk[253] << 8) | last_chunk[254]) & 0x3ff); if (dlen < 256) dlen = 256; if (dlen > 70911) dlen = 70911; d_data_len_out[hash_id] = dlen; for (int i = dlen; i < dlen + 16 && i < (72 * 1024); i++) sData[i] = 0; }
 }
 
-__global__ void astrobwt_extract_bwt_kernel(const uint8_t* __restrict__ d_sdata, const int32_t* __restrict__ d_sa, const int32_t* __restrict__ d_data_len, uint8_t* __restrict__ d_bwt, int batch_size) {
-    static constexpr int HOST_SDATA_STRIDE = 72 * 1024; static constexpr int MAX_SA_N = 71429;
-    int hash_id = blockIdx.y; if (hash_id >= batch_size) return;
-    int n = d_data_len[hash_id]; if (n <= 0) return;
-    const uint8_t* T = d_sdata + (size_t)hash_id * HOST_SDATA_STRIDE; const int32_t* SA = d_sa + (size_t)hash_id * MAX_SA_N; uint8_t* BWT = d_bwt + (size_t)hash_id * MAX_SA_N;
-    for (int i = threadIdx.x; i < n; i += blockDim.x) BWT[i] = T[(SA[i] + n - 1) % n];
-}
-
 __global__ void astrobwt_final_hash_kernel(const int32_t* __restrict__ d_sa, const int32_t* __restrict__ d_data_len, uint64_t* __restrict__ d_solutions, uint32_t nonce_start, int batch_size) {
     static constexpr int MAX_SA_N = 71429; int tid = blockIdx.x * blockDim.x + threadIdx.x; if (tid >= batch_size) return;
     int n = d_data_len[tid]; if (n <= 0) return;
@@ -525,33 +517,6 @@ __global__ void init_sort_keys_kernel(const uint8_t* __restrict__ d_sdata,
         }
         d_keys[base_offset + i] = key;
         d_vals[base_offset + i] = (uint32_t)i;
-    }
-}
-
-__global__ void build_ordered_shifted_keys_kernel(const uint8_t* __restrict__ d_sdata,
-                                                  const int32_t* __restrict__ d_data_len,
-                                                  const int* __restrict__ d_offsets,
-                                                  const uint32_t* __restrict__ d_src_vals,
-                                                  uint64_t* __restrict__ d_keys,
-                                                  uint32_t* __restrict__ d_vals,
-                                                  int batch_size,
-                                                  int shift) {
-    int hash_id = blockIdx.y; if (hash_id >= batch_size) return;
-    int n = d_data_len[hash_id]; if (n < 2 || n > 70911) return;
-    static constexpr int HOST_SDATA_STRIDE = 72 * 1024;
-    const int base_offset = d_offsets[hash_id];
-    const uint8_t* T = d_sdata + (size_t)hash_id * HOST_SDATA_STRIDE;
-    for (int i = threadIdx.x; i < n; i += blockDim.x) {
-        const uint32_t suffix = d_src_vals[base_offset + i];
-        uint64_t key = 0;
-        #pragma unroll
-        for (int b = 0; b < kInitialPrefixSymbols; ++b) {
-            const uint32_t pos = suffix + (uint32_t)shift + (uint32_t)b;
-            const uint64_t sym = (pos < (uint32_t)n) ? ((uint64_t)T[pos] + 1ULL) : 0ULL;
-            key = (key << 9) | sym;
-        }
-        d_keys[base_offset + i] = key;
-        d_vals[base_offset + i] = suffix;
     }
 }
 
@@ -607,56 +572,6 @@ __global__ void build_ordered_bytes64_kernel(const uint8_t* __restrict__ d_sdata
     }
 }
 
-__global__ void build_ordered_bytes32_kernel(const uint8_t* __restrict__ d_sdata,
-                                             const int32_t* __restrict__ d_data_len,
-                                             const int* __restrict__ d_offsets,
-                                             const uint32_t* __restrict__ d_src_vals,
-                                             uint32_t* __restrict__ d_keys,
-                                             uint32_t* __restrict__ d_vals,
-                                             int batch_size,
-                                             int shift) {
-    int hash_id = blockIdx.y; if (hash_id >= batch_size) return;
-    int n = d_data_len[hash_id]; if (n < 2 || n > 70911) return;
-    static constexpr int HOST_SDATA_STRIDE = 72 * 1024;
-    const int base_offset = d_offsets[hash_id];
-    const uint8_t* T = d_sdata + (size_t)hash_id * HOST_SDATA_STRIDE;
-    for (int i = threadIdx.x; i < n; i += blockDim.x) {
-        const uint32_t suffix = d_src_vals[base_offset + i];
-        uint32_t key = 0;
-        #pragma unroll
-        for (int b = 0; b < kFastPrefixBytes; ++b) {
-            key <<= 8;
-            const uint32_t pos = suffix + (uint32_t)shift + (uint32_t)b;
-            if (pos < (uint32_t)n) key |= (uint32_t)T[pos];
-        }
-        d_keys[base_offset + i] = key;
-        d_vals[base_offset + i] = suffix;
-    }
-}
-
-__global__ void init_sort_keys32_kernel(const uint8_t* __restrict__ d_sdata,
-                                        const int32_t* __restrict__ d_data_len,
-                                        const int* __restrict__ d_offsets,
-                                        uint32_t* __restrict__ d_keys,
-                                        uint32_t* __restrict__ d_vals,
-                                        int batch_size) {
-    int hash_id = blockIdx.y; if (hash_id >= batch_size) return;
-    int n = d_data_len[hash_id]; if (n < 2 || n > 70911) return;
-    static constexpr int HOST_SDATA_STRIDE = 72 * 1024;
-    int base_offset = d_offsets[hash_id];
-    const uint8_t* T = d_sdata + (size_t)hash_id * HOST_SDATA_STRIDE;
-    for (int i = threadIdx.x; i < n; i += blockDim.x) {
-        uint32_t key = 0;
-        #pragma unroll
-        for (int b = 0; b < kFastPrefixBytes; ++b) {
-            key <<= 8;
-            if (i + b < n) key |= (uint32_t)T[i + b];
-        }
-        d_keys[base_offset + i] = key;
-        d_vals[base_offset + i] = (uint32_t)i;
-    }
-}
-
 __global__ void astrobwt_final_hash_segments_kernel(const uint32_t* __restrict__ d_sorted_sa,
                                                     const int32_t* __restrict__ d_data_len,
                                                     const int* __restrict__ d_offsets,
@@ -687,32 +602,6 @@ __global__ void astrobwt_final_hash_segments_kernel(const uint32_t* __restrict__
     }
 }
 
-__global__ void assign_prefix_ranks_kernel(const uint64_t* __restrict__ d_sorted_keys,
-                                           const uint32_t* __restrict__ d_sorted_vals,
-                                           const int32_t* __restrict__ d_data_len,
-                                           const int* __restrict__ d_offsets,
-                                           uint32_t* __restrict__ d_ranks,
-                                           uint32_t* __restrict__ d_unique_counts,
-                                           int32_t* __restrict__ d_sa,
-                                           int batch_size) {
-    int hash_id = blockIdx.x; if (hash_id >= batch_size) return;
-    int n = d_data_len[hash_id]; if (n <= 0 || n > 70911) return;
-    const int base_offset = d_offsets[hash_id];
-    uint64_t prev_key = 0;
-    uint32_t rank = 0;
-    for (int i = 0; i < n; ++i) {
-        const uint64_t key = d_sorted_keys[base_offset + i];
-        if (i == 0 || key != prev_key) {
-            prev_key = key;
-            rank++;
-        }
-        const uint32_t idx = d_sorted_vals[base_offset + i];
-        d_ranks[base_offset + idx] = rank;
-        if (d_sa) d_sa[(size_t)hash_id * 71429 + i] = (int32_t)idx;
-    }
-    d_unique_counts[hash_id] = rank;
-}
-
 __global__ void build_rank_keys_kernel(const uint32_t* __restrict__ d_ranks,
                                        const int32_t* __restrict__ d_data_len,
                                        const int* __restrict__ d_offsets,
@@ -728,44 +617,6 @@ __global__ void build_rank_keys_kernel(const uint32_t* __restrict__ d_ranks,
         d_keys[base_offset + i] = ((uint64_t)r1 << 32) | (uint64_t)r2;
         d_vals[base_offset + i] = (uint32_t)i;
     }
-}
-
-__global__ void assign_refined_ranks_kernel(const uint64_t* __restrict__ d_sorted_keys,
-                                            const uint32_t* __restrict__ d_sorted_vals,
-                                            const int32_t* __restrict__ d_data_len,
-                                            const int* __restrict__ d_offsets,
-                                            uint32_t* __restrict__ d_ranks_out,
-                                            uint32_t* __restrict__ d_unique_counts,
-                                            int32_t* __restrict__ d_sa,
-                                            int batch_size) {
-    int hash_id = blockIdx.x; if (hash_id >= batch_size) return;
-    int n = d_data_len[hash_id]; if (n <= 0 || n > 70911) return;
-    const int base_offset = d_offsets[hash_id];
-    uint64_t prev_key = 0;
-    uint32_t rank = 0;
-    for (int i = 0; i < n; ++i) {
-        const uint64_t key = d_sorted_keys[base_offset + i];
-        if (i == 0 || key != prev_key) {
-            prev_key = key;
-            rank++;
-        }
-        const uint32_t idx = d_sorted_vals[base_offset + i];
-        d_ranks_out[base_offset + idx] = rank;
-        if (d_sa) d_sa[(size_t)hash_id * 71429 + i] = (int32_t)idx;
-    }
-    d_unique_counts[hash_id] = rank;
-}
-
-__device__ int d_compare_suffixes(const uint8_t* T, int n, uint32_t a, uint32_t b) {
-    if (a == b) return 0;
-    while (a < (uint32_t)n && b < (uint32_t)n) {
-        const uint8_t av = T[a];
-        const uint8_t bv = T[b];
-        if (av != bv) return (av < bv) ? -1 : 1;
-        ++a;
-        ++b;
-    }
-    return (a == (uint32_t)n) ? -1 : 1;
 }
 
 __device__ int d_compare_suffixes_from(const uint8_t* T, int n, uint32_t a, uint32_t b, uint32_t depth) {
@@ -800,210 +651,6 @@ __device__ int d_compare_suffixes_from(const uint8_t* T, int n, uint32_t a, uint
         return (rem_a < rem_b) ? -1 : 1;
     }
     return (aa >= (uint32_t)n) ? -1 : 1;
-}
-
-__device__ __forceinline__ bool d_suffix_less(const uint8_t* T,
-                                              int n,
-                                              uint32_t a,
-                                              uint32_t b,
-                                              uint32_t depth) {
-    if (a == 0xFFFFFFFFU) return false;
-    if (b == 0xFFFFFFFFU) return true;
-    return d_compare_suffixes_from(T, n, a, b, depth) < 0;
-}
-
-__global__ void refine_fast_buckets_kernel(const uint8_t* __restrict__ d_sdata,
-                                           const int32_t* __restrict__ d_data_len,
-                                           const int* __restrict__ d_offsets,
-                                           const uint32_t* __restrict__ d_sorted_keys,
-                                           uint32_t* __restrict__ d_sorted_vals,
-                                           int batch_size) {
-    if (threadIdx.x != 0) return;
-    const int hash_id = blockIdx.x;
-    if (hash_id >= batch_size) return;
-
-    const int n = d_data_len[hash_id];
-    if (n <= 1 || n > 70911) return;
-
-    static constexpr int HOST_SDATA_STRIDE = 72 * 1024;
-    const uint8_t* T = d_sdata + (size_t)hash_id * HOST_SDATA_STRIDE;
-    const int base_offset = d_offsets[hash_id];
-    uint32_t* values = d_sorted_vals + base_offset;
-    const uint32_t* keys = d_sorted_keys + base_offset;
-
-    for (int i = 0; i < n;) {
-        int j = i + 1;
-        const uint32_t key = keys[i];
-        while (j < n && keys[j] == key) ++j;
-        if (j - i > 1) {
-            for (int k = i + 1; k < j; ++k) {
-                const uint32_t value = values[k];
-                int pos = k - 1;
-                while (pos >= i && d_compare_suffixes(T, n, value, values[pos]) < 0) {
-                    values[pos + 1] = values[pos];
-                    --pos;
-                }
-                values[pos + 1] = value;
-            }
-        }
-        i = j;
-    }
-}
-
-__global__ void refine_seed_buckets_kernel(const uint8_t* __restrict__ d_sdata,
-                                           const int32_t* __restrict__ d_data_len,
-                                           const int* __restrict__ d_offsets,
-                                           const uint64_t* __restrict__ d_sorted_keys,
-                                           uint32_t* __restrict__ d_sorted_vals,
-                                           uint32_t* __restrict__ d_fallback_flags,
-                                           int32_t* __restrict__ d_sa,
-                                           uint32_t* __restrict__ d_unique_counts,
-                                           int batch_size) {
-    if (threadIdx.x != 0) return;
-    const int hash_id = blockIdx.x;
-    if (hash_id >= batch_size) return;
-
-    const int n = d_data_len[hash_id];
-    if (n <= 0 || n > 70911) return;
-
-    static constexpr int HOST_SDATA_STRIDE = 72 * 1024;
-    static constexpr int MAX_SA_N = 71429;
-    const uint8_t* T = d_sdata + (size_t)hash_id * HOST_SDATA_STRIDE;
-    const int base_offset = d_offsets[hash_id];
-    int32_t* SA = d_sa + (size_t)hash_id * MAX_SA_N;
-
-    for (int i = 0; i < n;) {
-        int j = i + 1;
-        const uint64_t key = d_sorted_keys[base_offset + i];
-        while (j < n && d_sorted_keys[base_offset + j] == key) ++j;
-        uint32_t* values = d_sorted_vals + base_offset;
-        if (j - i > 1) {
-            for (int k = i + 1; k < j; ++k) {
-                const uint32_t value = values[k];
-                int pos = k - 1;
-                while (pos >= i && d_compare_suffixes(T, n, value, values[pos]) < 0) {
-                    values[pos + 1] = values[pos];
-                    --pos;
-                }
-                values[pos + 1] = value;
-            }
-        }
-        for (int k = i; k < j; ++k) SA[k] = (int32_t)values[k];
-        i = j;
-    }
-
-    d_fallback_flags[hash_id] = 0;
-    d_unique_counts[hash_id] = (uint32_t)n;
-}
-
-__global__ void detect_ambiguous_segments_kernel(const uint64_t* __restrict__ d_primary_keys,
-                                                 const uint64_t* __restrict__ d_secondary_keys,
-                                                 const int32_t* __restrict__ d_data_len,
-                                                 const int* __restrict__ d_offsets,
-                                                 uint32_t* __restrict__ d_refine_flags,
-                                                 uint32_t* __restrict__ d_refine_segment_counts,
-                                                 uint32_t* __restrict__ d_ambiguous_counts,
-                                                 int batch_size) {
-    const int hash_id = blockIdx.x;
-    if (hash_id >= batch_size) return;
-
-    const int n = d_data_len[hash_id];
-    if (n <= 1 || n > 70911) {
-        if (threadIdx.x == 0) {
-            d_refine_flags[hash_id] = 0;
-            if (d_refine_segment_counts) d_refine_segment_counts[hash_id] = 0;
-            if (d_ambiguous_counts) d_ambiguous_counts[hash_id] = 0;
-        }
-        return;
-    }
-
-    const int base_offset = d_offsets[hash_id];
-    __shared__ uint32_t s_has_ambiguous;
-    __shared__ uint32_t s_equal_pairs;
-    if (threadIdx.x == 0) {
-        s_has_ambiguous = 0;
-        s_equal_pairs = 0;
-    }
-    __syncthreads();
-
-    uint32_t local_equal_pairs = 0;
-    for (int i = threadIdx.x + 1; i < n; i += blockDim.x) {
-        const bool primary_equal = d_primary_keys[base_offset + i] == d_primary_keys[base_offset + i - 1];
-        const bool secondary_equal = !d_secondary_keys ||
-            d_secondary_keys[base_offset + i] == d_secondary_keys[base_offset + i - 1];
-        if (primary_equal && secondary_equal) {
-            local_equal_pairs++;
-        }
-    }
-    if (local_equal_pairs != 0) {
-        atomicExch(&s_has_ambiguous, 1U);
-        atomicAdd(&s_equal_pairs, local_equal_pairs);
-    }
-    __syncthreads();
-
-    if (threadIdx.x == 0) {
-        d_refine_flags[hash_id] = s_has_ambiguous;
-        if (d_refine_segment_counts) d_refine_segment_counts[hash_id] = s_has_ambiguous;
-        if (d_ambiguous_counts) d_ambiguous_counts[hash_id] = s_has_ambiguous ? (s_equal_pairs + 1U) : 0U;
-    }
-}
-
-__global__ void refine_sorted_buckets_kernel(const uint8_t* __restrict__ d_sdata,
-                                             const int32_t* __restrict__ d_data_len,
-                                             const int* __restrict__ d_offsets,
-                                             const uint32_t* __restrict__ d_refine_flags,
-                                             const uint64_t* __restrict__ d_primary_keys,
-                                             const uint64_t* __restrict__ d_secondary_keys,
-                                             uint32_t* __restrict__ d_sorted_vals,
-                                             int32_t* __restrict__ d_sa,
-                                             uint32_t* __restrict__ d_max_bucket_sizes,
-                                             int batch_size) {
-    if (threadIdx.x != 0) return;
-    const int hash_id = blockIdx.x;
-    if (hash_id >= batch_size) return;
-
-    const int n = d_data_len[hash_id];
-    if (n <= 1 || n > 70911) return;
-    if (d_refine_flags && d_refine_flags[hash_id] == 0) return;
-
-    static constexpr int HOST_SDATA_STRIDE = 72 * 1024;
-    static constexpr int MAX_SA_N = 71429;
-    const uint8_t* T = d_sdata + (size_t)hash_id * HOST_SDATA_STRIDE;
-    const int base_offset = d_offsets[hash_id];
-    uint32_t* values = d_sorted_vals + base_offset;
-    int32_t* SA = d_sa ? (d_sa + (size_t)hash_id * MAX_SA_N) : nullptr;
-
-    uint32_t max_bucket_size = 1;
-
-    for (int i = 0; i < n;) {
-        int j = i + 1;
-        const uint64_t primary = d_primary_keys[base_offset + i];
-        const uint64_t secondary = d_secondary_keys ? d_secondary_keys[base_offset + i] : 0ULL;
-        while (j < n &&
-               d_primary_keys[base_offset + j] == primary &&
-               (!d_secondary_keys || d_secondary_keys[base_offset + j] == secondary)) ++j;
-
-        const uint32_t bucket_size = (uint32_t)(j - i);
-        if (bucket_size > 1) {
-            if (bucket_size > max_bucket_size) max_bucket_size = bucket_size;
-            for (int k = i + 1; k < j; ++k) {
-                const uint32_t value = values[k];
-                int pos = k - 1;
-                while (pos >= i && d_compare_suffixes(T, n, value, values[pos]) < 0) {
-                    values[pos + 1] = values[pos];
-                    --pos;
-                }
-                values[pos + 1] = value;
-            }
-        }
-
-        if (SA) {
-            for (int k = i; k < j; ++k) SA[k] = (int32_t)values[k];
-        }
-        i = j;
-    }
-
-    if (d_max_bucket_sizes) d_max_bucket_sizes[hash_id] = max_bucket_size;
 }
 
 // Block-per-hash, grid-stride over elements. Each thread tests a LOCAL
@@ -1144,60 +791,6 @@ __global__ void build_bucket_descriptors_kernel(const K* __restrict__ d_primary_
             }
         }
     }
-}
-
-__global__ void build_bucket_descriptors32_kernel(const uint32_t* __restrict__ d_primary_keys,
-                                                  const uint32_t* __restrict__ d_secondary_keys,
-                                                  const int32_t* __restrict__ d_data_len,
-                                                  const int* __restrict__ d_offsets,
-                                                  uint64_t* __restrict__ d_bucket_descs,
-                                                  uint32_t* __restrict__ d_bucket_total_count,
-                                                  uint32_t* __restrict__ d_bucket_counts,
-                                                  uint32_t* __restrict__ d_ambiguous_counts,
-                                                  uint32_t* __restrict__ d_max_bucket_sizes,
-                                                  uint32_t bucket_depth,
-                                                  int batch_size) {
-    if (threadIdx.x != 0) return;
-    const int hash_id = blockIdx.x;
-    if (hash_id >= batch_size) return;
-
-    const int n = d_data_len[hash_id];
-    if (n <= 1 || n > 70911) {
-        if (d_bucket_counts) d_bucket_counts[hash_id] = 0;
-        if (d_ambiguous_counts) d_ambiguous_counts[hash_id] = 0;
-        if (d_max_bucket_sizes) d_max_bucket_sizes[hash_id] = 0;
-        return;
-    }
-
-    const int base_offset = d_offsets[hash_id];
-    uint32_t local_bucket_count = 0;
-    uint32_t local_ambiguous_count = 0;
-    uint32_t local_max_bucket_size = 1;
-
-    for (int i = 0; i < n;) {
-        int j = i + 1;
-        const uint32_t primary = d_primary_keys[base_offset + i];
-        const uint32_t secondary = d_secondary_keys ? d_secondary_keys[base_offset + i] : 0U;
-        while (j < n &&
-               d_primary_keys[base_offset + j] == primary &&
-               (!d_secondary_keys || d_secondary_keys[base_offset + j] == secondary)) {
-            ++j;
-        }
-
-        const uint32_t bucket_size = (uint32_t)(j - i);
-        if (bucket_size > 1) {
-            const uint32_t slot = atomicAdd(d_bucket_total_count, 1U);
-            d_bucket_descs[slot] = d_pack_bucket_desc((uint32_t)hash_id, (uint32_t)i, bucket_size, bucket_depth);
-            local_bucket_count++;
-            local_ambiguous_count += bucket_size;
-            if (bucket_size > local_max_bucket_size) local_max_bucket_size = bucket_size;
-        }
-        i = j;
-    }
-
-    if (d_bucket_counts) d_bucket_counts[hash_id] = local_bucket_count;
-    if (d_ambiguous_counts) d_ambiguous_counts[hash_id] = local_ambiguous_count;
-    if (d_max_bucket_sizes) d_max_bucket_sizes[hash_id] = local_max_bucket_size;
 }
 
 __global__ void refine_bucket_descs_kernel(const uint8_t* __restrict__ d_sdata,
@@ -1760,65 +1353,6 @@ __global__ void sb_sort_large_desc_kernel(
 // Build the bin4 (large-segment) id list: scan ids_packed[bin_base[4]..]
 // already gives bin4 ids contiguously, so the large kernel can index it
 // directly via (ids_packed + bin_base[4]).  No separate kernel needed.
-
-__global__ void refine_small_bucket_descs_kernel(const uint8_t* __restrict__ d_sdata,
-                                                 const int32_t* __restrict__ d_data_len,
-                                                 const int* __restrict__ d_offsets,
-                                                 const uint64_t* __restrict__ d_bucket_descs,
-                                                 uint32_t bucket_total_count,
-                                                 uint32_t* __restrict__ d_sorted_vals) {
-    __shared__ uint32_t s_values[256];
-
-    const uint32_t lane = threadIdx.x & 31U;
-    const uint32_t warp_in_block = threadIdx.x >> 5;
-    const uint32_t global_warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
-    const uint32_t total_warps = (gridDim.x * blockDim.x) >> 5;
-    const uint32_t warp_base = warp_in_block * 32U;
-
-    for (uint32_t bucket_id = global_warp; bucket_id < bucket_total_count; bucket_id += total_warps) {
-        uint32_t hash_id = 0;
-        uint32_t start = 0;
-        uint32_t len = 0;
-        uint32_t depth = 0;
-        d_unpack_bucket_desc(d_bucket_descs[bucket_id], hash_id, start, len, depth);
-        if (len <= 1 || len > 32) continue;
-
-        static constexpr int HOST_SDATA_STRIDE = 72 * 1024;
-        const int n = d_data_len[hash_id];
-        const int base_offset = d_offsets[hash_id] + (int)start;
-        const uint8_t* T = d_sdata + (size_t)hash_id * HOST_SDATA_STRIDE;
-        uint32_t* values = d_sorted_vals + base_offset;
-
-        s_values[warp_base + lane] = (lane < len) ? values[lane] : 0xFFFFFFFFU;
-        __syncwarp();
-
-        for (uint32_t k = 2; k <= 32; k <<= 1) {
-            for (uint32_t j = k >> 1; j > 0; j >>= 1) {
-                const uint32_t partner = lane ^ j;
-                if (partner > lane) {
-                    const uint32_t self_index = warp_base + lane;
-                    const uint32_t peer_index = warp_base + partner;
-                    const uint32_t self_value = s_values[self_index];
-                    const uint32_t peer_value = s_values[peer_index];
-                    const bool ascending = (lane & k) == 0;
-                    const bool swap = ascending
-                        ? d_suffix_less(T, n, peer_value, self_value, depth)
-                        : d_suffix_less(T, n, self_value, peer_value, depth);
-                    if (swap) {
-                        s_values[self_index] = peer_value;
-                        s_values[peer_index] = self_value;
-                    }
-                }
-                __syncwarp();
-            }
-        }
-
-        if (lane < len) {
-            values[lane] = s_values[warp_base + lane];
-        }
-        __syncwarp();
-    }
-}
 
 __global__ void extract_sa_from_sorted_kernel(const uint32_t* __restrict__ d_sorted_vals, const int32_t* d_data_len, const int* d_offsets, int32_t* d_sa, int batch_size) {
     int hash_id = blockIdx.y; if (hash_id >= batch_size) return;
@@ -3391,98 +2925,6 @@ static bool gpu_build_fast_sa_window(GPUContext* ctx,
         }
     }
 
-    if (stats) {
-        cudaEventRecord(e4, ctx->stream);
-        CUDA_CHECK(cudaEventSynchronize(e4));
-        cudaEventElapsedTime(&stats->offsets_ms, e0, e1);
-        cudaEventElapsedTime(&stats->keys_ms, e1, e2);
-        cudaEventElapsedTime(&stats->sort_ms, e2, e3);
-        cudaEventElapsedTime(&stats->refine_ms, e3, e4);
-        gpu_collect_bucket_stats(ctx, active_batch, stats);
-        cudaEventDestroy(e0); cudaEventDestroy(e1); cudaEventDestroy(e2); cudaEventDestroy(e3); cudaEventDestroy(e4);
-    }
-    return true;
-}
-
-[[maybe_unused]] static bool gpu_build_fast32_sa_window(GPUContext* ctx,
-                                                        const uint8_t* d_sdata_base,
-                                                        const int32_t* d_data_len_base,
-                                                        int active_batch,
-                                                        int& total_elements,
-                                                        GPUSABuildStats* stats = nullptr) {
-    cudaSetDevice(ctx->device_id);
-    total_elements = 0;
-    uint32_t bucket_total_count = 0;
-    if (active_batch <= 0) return true;
-
-    uint32_t* d_keys32_in = reinterpret_cast<uint32_t*>(ctx->d_keys_in);
-    uint32_t* d_keys32_out = reinterpret_cast<uint32_t*>(ctx->d_keys_out);
-
-    cudaEvent_t e0 = nullptr, e1 = nullptr, e2 = nullptr, e3 = nullptr, e4 = nullptr;
-    if (stats) {
-        cudaEventCreate(&e0);
-        cudaEventCreate(&e1);
-        cudaEventCreate(&e2);
-        cudaEventCreate(&e3);
-        cudaEventCreate(&e4);
-        cudaEventRecord(e0, ctx->stream);
-    }
-
-    build_offsets_kernel<<<1, 1, 0, ctx->stream>>>(d_data_len_base, ctx->d_offsets, active_batch);
-    if (stats) cudaEventRecord(e1, ctx->stream);
-    CUDA_CHECK(cudaMemcpyAsync(&total_elements, ctx->d_offsets + active_batch, sizeof(int), cudaMemcpyDeviceToHost, ctx->stream));
-    CUDA_CHECK(cudaStreamSynchronize(ctx->stream));
-    if (stats) cudaEventSynchronize(e1);
-    if (total_elements <= 0) {
-        if (stats) {
-            cudaEventDestroy(e0); cudaEventDestroy(e1); cudaEventDestroy(e2); cudaEventDestroy(e3); cudaEventDestroy(e4);
-        }
-        return true;
-    }
-
-    if (stats) {
-        CUDA_CHECK(cudaMemsetAsync(ctx->d_bucket_counts, 0, (size_t)active_batch * sizeof(uint32_t), ctx->stream));
-        CUDA_CHECK(cudaMemsetAsync(ctx->d_ambiguous_counts, 0, (size_t)active_batch * sizeof(uint32_t), ctx->stream));
-        CUDA_CHECK(cudaMemsetAsync(ctx->d_max_bucket_sizes, 0, (size_t)active_batch * sizeof(uint32_t), ctx->stream));
-    }
-    CUDA_CHECK(cudaMemsetAsync(ctx->d_bucket_total_count, 0, sizeof(uint32_t), ctx->stream));
-
-    init_sort_keys32_kernel<<<dim3(1, active_batch), 256, 0, ctx->stream>>>(
-        d_sdata_base, d_data_len_base, ctx->d_offsets, d_keys32_in, ctx->d_vals_in, active_batch);
-    build_ordered_bytes32_kernel<<<dim3(1, active_batch), 256, 0, ctx->stream>>>(
-        d_sdata_base, d_data_len_base, ctx->d_offsets, ctx->d_vals_in, d_keys32_out, ctx->d_vals_out, active_batch, kFastPrefixBytes);
-    if (stats) cudaEventRecord(e2, ctx->stream);
-    cub::DeviceSegmentedRadixSort::SortPairs(
-        ctx->d_sort_temp, ctx->sort_temp_size,
-        d_keys32_out, d_keys32_in,
-        ctx->d_vals_out, ctx->d_vals_in,
-        total_elements, active_batch, ctx->d_offsets, ctx->d_offsets + 1, 0, 32, ctx->stream);
-    build_ordered_bytes32_kernel<<<dim3(1, active_batch), 256, 0, ctx->stream>>>(
-        d_sdata_base, d_data_len_base, ctx->d_offsets, ctx->d_vals_in, d_keys32_out, ctx->d_vals_out, active_batch, 0);
-    cub::DeviceSegmentedRadixSort::SortPairs(
-        ctx->d_sort_temp, ctx->sort_temp_size,
-        d_keys32_out, d_keys32_in,
-        ctx->d_vals_out, ctx->d_vals_in,
-        total_elements, active_batch, ctx->d_offsets, ctx->d_offsets + 1, 0, 32, ctx->stream);
-    if (stats) cudaEventRecord(e3, ctx->stream);
-
-    build_ordered_bytes32_kernel<<<dim3(1, active_batch), 256, 0, ctx->stream>>>(
-        d_sdata_base, d_data_len_base, ctx->d_offsets, ctx->d_vals_in, d_keys32_out, ctx->d_vals_out, active_batch, kFastPrefixBytes);
-    build_bucket_descriptors32_kernel<<<active_batch, 1, 0, ctx->stream>>>(
-        d_keys32_in, d_keys32_out, d_data_len_base, ctx->d_offsets,
-        ctx->d_bucket_descs, ctx->d_bucket_total_count,
-        stats ? ctx->d_bucket_counts : nullptr,
-        stats ? ctx->d_ambiguous_counts : nullptr,
-        stats ? ctx->d_max_bucket_sizes : nullptr,
-        (uint32_t)(kFastPrefixBytes * 2),
-        active_batch);
-    CUDA_CHECK(cudaMemcpyAsync(&bucket_total_count, ctx->d_bucket_total_count, sizeof(uint32_t), cudaMemcpyDeviceToHost, ctx->stream));
-    CUDA_CHECK(cudaStreamSynchronize(ctx->stream));
-    if (bucket_total_count > 0) {
-        const uint32_t refine_blocks = ((bucket_total_count + 255U) / 256U)  /* gridDim.x max is 2^31-1, NOT 65535; capping silently dropped segments >16.78M (batch>~1536) -> corrupt SA */;
-        refine_bucket_descs_kernel<<<refine_blocks, 256, 0, ctx->stream>>>(
-            d_sdata_base, d_data_len_base, ctx->d_offsets, ctx->d_bucket_descs, bucket_total_count, ctx->d_vals_out);
-    }
     if (stats) {
         cudaEventRecord(e4, ctx->stream);
         CUDA_CHECK(cudaEventSynchronize(e4));

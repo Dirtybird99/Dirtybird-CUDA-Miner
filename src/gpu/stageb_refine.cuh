@@ -134,34 +134,6 @@ __device__ __forceinline__ uint32_t sb_next_pow2(uint32_t x) {
 // WARP bitonic sort (len <= 32). One warp, value held in a register per lane.
 // Lanes >= len hold SENTINEL. Produces ascending order in lanes [0,len).
 // =====================================================================
-__device__ __forceinline__ void sb_warp_bitonic(const uint8_t* T, int n,
-                                                 int depth, uint32_t& v, int len) {
-    const int lane = threadIdx.x & 31;
-    const unsigned FULL = 0xFFFFFFFFu;
-    // standard bitonic network on 32 elements; idle lanes carry SENTINEL.
-    for (int k = 2; k <= 32; k <<= 1) {
-        for (int j = k >> 1; j > 0; j >>= 1) {
-            uint32_t partner = __shfl_xor_sync(FULL, v, j);
-            bool ascending = ((lane & k) == 0);
-            // decide whether THIS lane should take the smaller or larger.
-            // Compare v (this lane) vs partner.
-            bool v_is_less;
-            int other = lane ^ j;
-            // need a consistent comparison independent of which side: compute less(v,partner)
-            if (v == partner) {
-                v_is_less = false;  // only equal when both SENTINEL; order irrelevant
-            } else {
-                v_is_less = sb_less(T, n, v, partner, depth);
-            }
-            // if this lane is the lower index (lane < other): keep smaller if ascending
-            bool keep_smaller = (lane < other) ? ascending : !ascending;
-            // this lane keeps v if (v is the smaller and keep_smaller) or (v is larger and !keep_smaller)
-            bool keep_v = (v_is_less == keep_smaller);
-            v = keep_v ? v : partner;
-        }
-    }
-}
-
 // =====================================================================
 // Generic bitonic compare-exchange over an index array `a` of logical
 // length `m` (power of two), executed cooperatively by `nthreads`.
@@ -211,49 +183,6 @@ __device__ __forceinline__ void sb_bitonic_array(uint32_t* a, int m,
 #endif
 
 // One block handles one segment (warp class or shared-mem block class).
-template<int BLOCK>
-__global__ void sb_sort_segments_kernel(
-        const uint8_t* __restrict__ T,
-        const uint32_t* __restrict__ seg_off,
-        const uint32_t* __restrict__ seg_len,
-        const uint32_t* __restrict__ seg_depth,
-        const uint32_t* __restrict__ seg_n,
-        const uint64_t* __restrict__ seg_Tbase,
-        uint32_t num_segments,
-        uint32_t* __restrict__ SA) {
-    __shared__ uint32_t buf[STAGEB_BLK_MAX];
-    uint32_t s = blockIdx.x;
-    if (s >= num_segments) return;
-    int len = (int)seg_len[s];
-    if (len <= 1) return;
-    const uint8_t* Tl = T + seg_Tbase[s];
-    int n = (int)seg_n[s];
-    int depth = (int)seg_depth[s];
-    uint32_t* sa = SA + seg_off[s];
-    int tid = threadIdx.x;
-
-    if (len <= 32) {
-        // warp-cooperative bitonic. Only the first warp participates.
-        if (tid < 32) {
-            uint32_t v = (tid < len) ? sa[tid] : STAGEB_SENTINEL;
-            sb_warp_bitonic(Tl, n, depth, v, len);
-            if (tid < len) sa[tid] = v;
-        }
-        return;
-    }
-
-    // block-cooperative bitonic in shared memory.
-    if (len > STAGEB_BLK_MAX) return; // large segments handled by sb_sort_large_kernel
-    int m = (int)sb_next_pow2((uint32_t)len);
-    // m <= STAGEB_BLK_MAX guaranteed by dispatch
-    for (int i = tid; i < m; i += BLOCK)
-        buf[i] = (i < len) ? sa[i] : STAGEB_SENTINEL;
-    __syncthreads();
-    sb_bitonic_array(buf, m, Tl, n, depth, tid, BLOCK);
-    for (int i = tid; i < len; i += BLOCK)
-        sa[i] = buf[i];
-}
-
 // Large-segment kernel: bitonic in GLOBAL scratch (one block per segment).
 // scratch is a per-block region of size >= max padded length.
 template<int BLOCK>
@@ -290,33 +219,6 @@ __global__ void sb_sort_large_kernel(
 }
 
 // trivial baseline: one thread per segment, insertion sort (for benchmark).
-__global__ void sb_insertion_baseline_kernel(
-        const uint8_t* __restrict__ T,
-        const uint32_t* __restrict__ seg_off,
-        const uint32_t* __restrict__ seg_len,
-        const uint32_t* __restrict__ seg_depth,
-        const uint32_t* __restrict__ seg_n,
-        const uint64_t* __restrict__ seg_Tbase,
-        uint32_t num_segments,
-        uint32_t* __restrict__ SA) {
-    uint32_t s = blockIdx.x * blockDim.x + threadIdx.x;
-    if (s >= num_segments) return;
-    int len = (int)seg_len[s];
-    if (len <= 1) return;
-    const uint8_t* Tl = T + seg_Tbase[s];
-    int n = (int)seg_n[s];
-    int depth = (int)seg_depth[s];
-    uint32_t* sa = SA + seg_off[s];
-    for (int i = 1; i < len; ++i) {
-        uint32_t key = sa[i];
-        int j = i - 1;
-        while (j >= 0 && cmp_suffix(Tl, n, sa[j], key, depth) > 0) {
-            sa[j+1] = sa[j]; --j;
-        }
-        sa[j+1] = key;
-    }
-}
-
 // =====================================================================
 // BIN-PACKED DISPATCH (bb_segsort style: bin by size, pack many tiny
 // segments — one thread per segment — into each block).
