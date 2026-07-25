@@ -24,15 +24,24 @@ jobs:
           method: network
           sub-packages: '["nvcc", "cudart-dev"]'
 
-      - name: Install OpenSSL dev headers
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev
+      - name: Install build and shell dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev shellcheck
+
+      - name: Check shell scripts
+        run: |
+          while IFS= read -r -d '' file; do
+            bash -n "$file"
+            shellcheck --severity=error "$file"
+          done < <(git ls-files -z '*.sh')
 
       - name: Build (compile-only; GPU parity/bench gate is skipped without a GPU)
         run: SKIP_SELFTEST=1 CUDA_ARCH=sm_89 bash build.sh
 
       - name: Smoke test (--help; no GPU needed)
-        continue-on-error: true
         run: LD_LIBRARY_PATH="${CUDA_PATH}/lib64:${LD_LIBRARY_PATH:-}" ./bin/openastronv_v3 --help
+
+      - name: Verify DERO vectors (CPU-only)
+        run: LD_LIBRARY_PATH="${CUDA_PATH}/lib64:${LD_LIBRARY_PATH:-}" ./bin/openastronv_v3 --verify-dero-vectors
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
