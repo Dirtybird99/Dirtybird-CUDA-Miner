@@ -178,7 +178,7 @@ jobs:
         with:
           cuda: '12.5.1'
           method: network
-          sub-packages: '["nvcc", "cudart"]'
+          sub-packages: '["nvcc", "cudart", "visual_studio_integration"]'
 
       - name: Install static OpenSSL
         shell: pwsh
