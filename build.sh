@@ -20,6 +20,7 @@ CUDA_TGT=""
 for d in "$CUDA_ROOT"/targets/*-linux; do [ -d "$d" ] && CUDA_TGT="$d" && break; done
 : "${CUDA_TGT:=$CUDA_ROOT/targets/x86_64-linux}"
 ARCH="${CUDA_ARCH:-sm_89}"
+VERSION="${DIRTYBIRD_VERSION:-dev}"
 # Expand CUDA_ARCH (comma-separated, e.g. "sm_87,sm_90") into nvcc -gencode flags.
 GENCODE=""
 IFS=',' read -ra _archs <<< "$ARCH"
@@ -32,7 +33,7 @@ echo "[1/3] libsais.c -> obj (as C)"
 gcc -O2 -c extern/libsais/libsais.c -Iextern/libsais -o obj/libsais.o || { echo BUILD_FAIL_GCC; exit 1; }
 
 echo "[2/3] nvcc link (slow) -> $TMP  (arch=$ARCH, cuda=$CUDA_ROOT)"
-"$NVCC" -O2 -std=c++17 $GENCODE -DHAS_OPENSSL \
+"$NVCC" -O2 -std=c++17 $GENCODE -DHAS_OPENSSL -DMINER_VER="\"${VERSION}\"" \
   -Isrc -Iextern/libsais \
   -I"$CUDA_ROOT/include" -I"$CUDA_TGT/include" \
   src/main.cpp src/gpu/astrobwt_gpu.cu obj/libsais.o \

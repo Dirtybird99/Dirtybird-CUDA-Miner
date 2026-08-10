@@ -3,6 +3,15 @@
 The format follows [Keep a Changelog](https://keepachangelog.com); this project uses semantic
 versioning.
 
+## v0.1.4 — 2026-08-10
+
+- Made the faster narrow comparator the recovered-engine default; RTX 4070 ABBA testing measured a
+  1.51% gain over wide mode, with a 12.912 KH/s 20-iteration result and 12.908 KH/s live mean.
+- Kept the safe 4096 default and auto-tune fallback below the 8 GB resource cliff.
+- Added CUDA 13.3 and native MSVC build compatibility plus a native Windows x64 release asset.
+- Expanded release fatbins to Ampere, Ada, and Hopper, and hardened releases with signed tags,
+  protected tag names, immutable assets, checksums, and pre-publication smoke tests.
+
 ## v0.1.3 — 2026-06-28
 
 Internal cleanup and documentation. No change in behavior or performance: the GPU output is identical

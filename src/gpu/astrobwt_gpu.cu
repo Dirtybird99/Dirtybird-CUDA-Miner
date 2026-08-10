@@ -1639,7 +1639,7 @@ static bool gpu_stageb_refine(GPUContext* ctx,
 
     cudaStream_t st = ctx->stream;
     { static bool _fcinit=false; if(!_fcinit){ int _fc=getenv("FAKECMP")?1:0; cudaMemcpyToSymbol(g_sb_fakecmp,&_fc,sizeof(int)); _fcinit=true; } }
-    { static bool _wcinit=false; if(!_wcinit){ int _wc=getenv("WIDECMP_OFF")?0:1; cudaMemcpyToSymbol(g_sb_widecmp,&_wc,sizeof(int)); _wcinit=true; } }
+    { static bool _wcinit=false; if(!_wcinit){ int _wc=getenv("WIDECMP")?1:0; cudaMemcpyToSymbol(g_sb_widecmp,&_wc,sizeof(int)); _wcinit=true; } }
     { static bool _fdinit=false; if(!_fdinit){ int _fd=getenv("FASTDIFF_OFF")?0:1; cudaMemcpyToSymbol(g_sb_fastdiff,&_fd,sizeof(int)); _fdinit=true; } }
 
     // [PERHASH] per-hash fused refine: one block/hash re-detects tied runs from the
@@ -3827,7 +3827,7 @@ std::vector<GPUDeviceInfo> gpu_enumerate() {
         info.compute_major = prop.major;
         info.compute_minor = prop.minor;
         info.sm_count = prop.multiProcessorCount;
-        info.mem_clock_khz = prop.memoryClockRate;
+        cudaDeviceGetAttribute(&info.mem_clock_khz, cudaDevAttrMemoryClockRate, i);
         char bus[32] = {0};
         if (cudaDeviceGetPCIBusId(bus, sizeof(bus), i) == cudaSuccess) info.pci_bus_id = bus;
         size_t fm = 0, tm = 0;

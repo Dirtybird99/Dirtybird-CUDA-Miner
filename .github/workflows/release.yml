@@ -4,154 +4,279 @@ on:
   push:
     tags: [ 'v*' ]
   workflow_dispatch:
+    inputs:
+      version:
+        description: Version to embed in build-only artifacts (vX.Y.Z)
+        required: true
+        type: string
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  # ---- amd64: the verified set (Linux x86-64 + Windows-via-WSL + HiveOS package) ----
-  build-amd64:
+  metadata:
     runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Resolve and verify version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            VER="$GITHUB_REF_NAME"
+            REF=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VER")
+            [[ "$(jq -r '.object.type' <<<"$REF")" == "tag" ]] || { echo "Release tags must be annotated" >&2; exit 1; }
+            TAG=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$(jq -r '.object.sha' <<<"$REF")")
+            [[ "$(jq -r '.object.sha' <<<"$TAG")" == "$GITHUB_SHA" ]] || { echo "Tag does not point to the workflow commit" >&2; exit 1; }
+            [[ "$(jq -r '.verification.verified' <<<"$TAG")" == "true" ]] || { echo "Release tag signature is not verified" >&2; exit 1; }
+          else
+            VER="$INPUT_VERSION"
+          fi
+          [[ "$VER" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Version must match vX.Y.Z" >&2; exit 1; }
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
 
-      - name: Install CUDA toolkit (nvcc only; runner has no GPU)
-        uses: Jimver/cuda-toolkit@v0.2.21
+  build-amd64:
+    needs: metadata
+    runs-on: ubuntu-22.04
+    env:
+      VER: ${{ needs.metadata.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@8022558310ea543e35132143092835585f60e628 # v0.2.21
         with:
-          cuda: '12.5.0'
+          cuda: '12.5.1'
           method: network
           sub-packages: '["nvcc", "cudart-dev"]'
 
-      - name: Install build deps (OpenSSL + zip)
+      - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y libssl-dev zip
 
-      - name: Build (sm_89; compiled without a GPU on the runner)
-        run: SKIP_SELFTEST=1 CUDA_ARCH=sm_89 bash build.sh
+      - name: Build Ampere, Ada, and Hopper fatbin
+        run: SKIP_SELFTEST=1 CUDA_ARCH=sm_86,sm_89,sm_90 DIRTYBIRD_VERSION="$VER" bash build.sh
 
-      - name: Package amd64 + windows-wsl + hiveos
+      - name: Smoke test
         run: |
-          VER="${GITHUB_REF_NAME:-dev}"
-          mkdir -p dist
-          # Linux amd64
-          LIN="Dirtybird-CUDA-Miner-linux-amd64-${VER}"
-          mkdir -p "dist/${LIN}"
-          cp bin/openastronv_v3 README.md LICENSE THIRD-PARTY-LICENSES.md run-gpu-miner.bat "dist/${LIN}/"
-          tar -C dist -czf "dist/${LIN}.tar.gz" "${LIN}"
-          # Windows (WSL): same Linux binary, launched via WSL by run-gpu-miner.bat
-          WINP="Dirtybird-CUDA-Miner-windows-wsl-${VER}"
-          mkdir -p "dist/${WINP}"
-          cp bin/openastronv_v3 README.md LICENSE run-gpu-miner.bat "dist/${WINP}/"
-          ( cd dist && zip -r "${WINP}.zip" "${WINP}" >/dev/null )
-          # HiveOS/MMPOS custom-miner package. Inner dir must match CUSTOM_NAME.
-          HV="dirtybird-cuda"
-          mkdir -p "dist/${HV}"
-          cp bin/openastronv_v3 README.md LICENSE "dist/${HV}/"
-          cp hiveos/h-manifest.conf hiveos/h-config.sh hiveos/h-run.sh hiveos/h-stats.sh hiveos/mmp-stats.sh "dist/${HV}/"
-          chmod +x "dist/${HV}"/*.sh
-          # Bundle runtime libs the rig may lack (CUDA itself is static; the driver supplies libcuda).
-          mkdir -p "dist/${HV}/lib"
-          for L in libssl.so.3 libcrypto.so.3 libstdc++.so.6 libgcc_s.so.1; do
-            P=$(ldd bin/openastronv_v3 | awk -v l="$L" '$1==l {print $3; exit}')
-            [ -n "$P" ] && [ -f "$P" ] && cp -L "$P" "dist/${HV}/lib/" && echo "bundled $L" || echo "WARN: $L missing"
-          done
-          tar -C dist -czf "dist/dirtybird-cuda-miner-${VER}.hiveos_mmpos.amd64.tar.gz" "${HV}"
-          rm -rf "dist/${LIN}" "dist/${WINP}" "dist/${HV}"
-          echo "=== amd64 artifacts ===" && ls -la dist
+          set -euo pipefail
+          test "$(./bin/openastronv_v3 --version)" = "derocuda $VER"
+          ./bin/openastronv_v3 --help >/dev/null
+          ./bin/openastronv_v3 --verify-dero-vectors
 
-      - uses: actions/upload-artifact@v4
+      - name: Package Linux, WSL, and HiveOS/MMPOS
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          LIN="Dirtybird-CUDA-Miner-linux-amd64-${VER}"
+          mkdir -p "dist/${LIN}/lib"
+          cp bin/openastronv_v3 README.md LICENSE THIRD-PARTY-LICENSES.md "dist/${LIN}/"
+          for LIB in libssl.so.3 libcrypto.so.3 libstdc++.so.6 libgcc_s.so.1; do
+            PATHNAME=$(ldd bin/openastronv_v3 | awk -v lib="$LIB" '$1 == lib { print $3; exit }')
+            test -n "$PATHNAME" && test -f "$PATHNAME"
+            cp -L "$PATHNAME" "dist/${LIN}/lib/"
+          done
+
+          WSL="Dirtybird-CUDA-Miner-windows-wsl-${VER}"
+          mkdir -p "dist/${WSL}"
+          cp bin/openastronv_v3 README.md LICENSE THIRD-PARTY-LICENSES.md run-gpu-miner.bat "dist/${WSL}/"
+          cp -a "dist/${LIN}/lib" "dist/${WSL}/"
+
+          HIVE="dirtybird-cuda"
+          mkdir -p "dist/${HIVE}"
+          cp bin/openastronv_v3 README.md LICENSE THIRD-PARTY-LICENSES.md "dist/${HIVE}/"
+          cp hiveos/h-manifest.conf hiveos/h-config.sh hiveos/h-run.sh hiveos/h-stats.sh hiveos/mmp-stats.sh "dist/${HIVE}/"
+          sed -i "s/^CUSTOM_VERSION=.*/CUSTOM_VERSION=${VER#v}/" "dist/${HIVE}/h-manifest.conf"
+          chmod +x "dist/${HIVE}"/*.sh
+          cp -a "dist/${LIN}/lib" "dist/${HIVE}/"
+
+          LD_LIBRARY_PATH="$PWD/dist/${LIN}/lib" "dist/${LIN}/openastronv_v3" --verify-dero-vectors
+          test "$(LD_LIBRARY_PATH="$PWD/dist/${LIN}/lib" "dist/${LIN}/openastronv_v3" --version)" = "derocuda $VER"
+          grep -qx "CUSTOM_VERSION=${VER#v}" "dist/${HIVE}/h-manifest.conf"
+
+          tar -C dist -czf "dist/${LIN}.tar.gz" "$LIN"
+          (cd dist && zip -qr "${WSL}.zip" "$WSL")
+          tar -C dist -czf "dist/dirtybird-cuda-miner-${VER}.hiveos_mmpos.amd64.tar.gz" "$HIVE"
+          rm -rf "dist/${LIN}" "dist/${WSL}" "dist/${HIVE}"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dist-amd64
-          path: dist/*
-          retention-days: 1
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
+          retention-days: 7
 
-  # ---- arm64: EXPERIMENTAL (Jetson sm_87 + GH200 sm_90). Never blocks the release. ----
   build-arm64:
+    needs: metadata
     runs-on: ubuntu-22.04-arm
-    continue-on-error: true
+    env:
+      VER: ${{ needs.metadata.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Install CUDA arm64 (sbsa) toolkit + deps
+      - name: Install CUDA 12.5 SBSA toolkit and dependencies
         run: |
-          set -e
+          set -euo pipefail
           curl -fsSLO https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/sbsa/cuda-keyring_1.1-1_all.deb
           sudo dpkg -i cuda-keyring_1.1-1_all.deb
           sudo apt-get update
-          # Prefer 12.5 to match amd64; fall back to whatever 12.x nvcc/cudart-dev the repo offers.
-          sudo apt-get install -y cuda-nvcc-12-5 cuda-cudart-dev-12-5 libssl-dev zip \
-            || sudo apt-get install -y cuda-nvcc-12-6 cuda-cudart-dev-12-6 libssl-dev zip \
-            || sudo apt-get install -y cuda-toolkit libssl-dev zip
-          echo "/usr/local/cuda/bin" >> "$GITHUB_PATH"
+          sudo apt-get install -y cuda-nvcc-12-5 cuda-cudart-dev-12-5 libssl-dev
+          echo "/usr/local/cuda-12.5/bin" >> "$GITHUB_PATH"
 
-      - name: "Build arm64 fatbin (Jetson sm_87 + GH200 sm_90; no GPU on runner)"
-        run: SKIP_SELFTEST=1 CUDA_ARCH=sm_87,sm_90 bash build.sh
+      - name: Build Jetson and GH200 fatbin
+        run: SKIP_SELFTEST=1 CUDA_ARCH=sm_87,sm_90 DIRTYBIRD_VERSION="$VER" bash build.sh
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          test "$(./bin/openastronv_v3 --version)" = "derocuda $VER"
+          ./bin/openastronv_v3 --help >/dev/null
+          ./bin/openastronv_v3 --verify-dero-vectors
 
       - name: Package arm64
         run: |
-          VER="${GITHUB_REF_NAME:-dev}"
-          mkdir -p dist
+          set -euo pipefail
           ARM="Dirtybird-CUDA-Miner-linux-arm64-${VER}"
-          mkdir -p "dist/${ARM}"
-          cp bin/openastronv_v3 README.md LICENSE THIRD-PARTY-LICENSES.md "dist/${ARM}/"
-          # Bundle runtime libs (same as the HiveOS package) so it starts on a bare arm64 rig.
           mkdir -p "dist/${ARM}/lib"
-          for L in libssl.so.3 libcrypto.so.3 libstdc++.so.6 libgcc_s.so.1; do
-            P=$(ldd bin/openastronv_v3 | awk -v l="$L" '$1==l {print $3; exit}')
-            [ -n "$P" ] && [ -f "$P" ] && cp -L "$P" "dist/${ARM}/lib/" && echo "bundled $L" || echo "WARN: $L missing"
+          cp bin/openastronv_v3 README.md LICENSE THIRD-PARTY-LICENSES.md "dist/${ARM}/"
+          for LIB in libssl.so.3 libcrypto.so.3 libstdc++.so.6 libgcc_s.so.1; do
+            PATHNAME=$(ldd bin/openastronv_v3 | awk -v lib="$LIB" '$1 == lib { print $3; exit }')
+            test -n "$PATHNAME" && test -f "$PATHNAME"
+            cp -L "$PATHNAME" "dist/${ARM}/lib/"
           done
-          tar -C dist -czf "dist/${ARM}.tar.gz" "${ARM}"
+          LD_LIBRARY_PATH="$PWD/dist/${ARM}/lib" "dist/${ARM}/openastronv_v3" --verify-dero-vectors
+          tar -C dist -czf "dist/${ARM}.tar.gz" "$ARM"
           rm -rf "dist/${ARM}"
-          echo "=== arm64 artifacts ===" && ls -la dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dist-arm64
-          path: dist/*
-          retention-days: 1
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
 
-  # ---- combine all artifacts, checksum, publish. Runs as long as amd64 succeeded. ----
-  release:
-    needs: [build-amd64, build-arm64]
-    if: ${{ always() && needs.build-amd64.result == 'success' }}
-    runs-on: ubuntu-latest
+  build-win64:
+    needs: metadata
+    runs-on: windows-2022
+    env:
+      VER: ${{ needs.metadata.outputs.version }}
     steps:
-      - name: Download all build artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@8022558310ea543e35132143092835585f60e628 # v0.2.21
+        with:
+          cuda: '12.5.1'
+          method: network
+          sub-packages: '["nvcc", "cudart"]'
+
+      - name: Install static OpenSSL
+        shell: pwsh
+        run: '& "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install openssl:x64-windows-static'
+
+      - name: Build native Windows fatbin
+        shell: pwsh
+        run: |
+          cmake -S . -B build-release -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+            -DCMAKE_CUDA_ARCHITECTURES="86;89;90" `
+            -DDIRTYBIRD_VERSION="$env:VER"
+          cmake --build build-release --config Release --parallel 2
+
+      - name: Smoke test and inspect dependencies
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path build-release/Release/openastronv_v3.exe
+          if ((& $exe --version) -ne "derocuda $env:VER") { throw "Incorrect embedded version" }
+          & $exe --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "--help failed" }
+          & $exe --verify-dero-vectors
+          if ($LASTEXITCODE -ne 0) { throw "CPU vector verification failed" }
+
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          $deps = & $dumpbin.FullName /dependents $exe | Out-String
+          $deps
+          if ($deps -match 'libssl|libcrypto|VCRUNTIME|MSVCP|cudart64') { throw "Unexpected dynamic runtime dependency" }
+
+      - name: Package native Windows
+        shell: pwsh
+        run: |
+          $name = "Dirtybird-CUDA-Miner-win64-$env:VER"
+          $dir = Join-Path dist $name
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item build-release/Release/openastronv_v3.exe,README.md,LICENSE,THIRD-PARTY-LICENSES.md $dir
+          Compress-Archive -Path $dir -DestinationPath "dist/$name.zip"
+          Remove-Item -Recurse -Force -LiteralPath $dir
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist-win64
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: [metadata, build-amd64, build-arm64, build-win64]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VER: ${{ needs.metadata.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: artifacts
 
-      - name: Collect archives + checksums
+      - name: Verify release inventory and checksums
         run: |
-          mkdir -p dist
-          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} dist/ \;
-          ( cd dist && sha256sum *.tar.gz *.zip > SHA256SUMS.txt )
-          echo "=== release assets ===" && ls -la dist && echo "---" && cat dist/SHA256SUMS.txt
+          set -euo pipefail
+          mkdir dist
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp '{}' dist/ \;
+          EXPECTED=(
+            "Dirtybird-CUDA-Miner-linux-amd64-${VER}.tar.gz"
+            "Dirtybird-CUDA-Miner-linux-arm64-${VER}.tar.gz"
+            "Dirtybird-CUDA-Miner-win64-${VER}.zip"
+            "Dirtybird-CUDA-Miner-windows-wsl-${VER}.zip"
+            "dirtybird-cuda-miner-${VER}.hiveos_mmpos.amd64.tar.gz"
+          )
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq "${#EXPECTED[@]}"
+          for FILE in "${EXPECTED[@]}"; do test -f "dist/$FILE"; done
+          (cd dist && sha256sum "${EXPECTED[@]}" > SHA256SUMS.txt && sha256sum -c SHA256SUMS.txt)
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/*.tar.gz
-            dist/*.zip
-            dist/SHA256SUMS.txt
-          generate_release_notes: true
-          body: |
-            CUDA **AstroBWTv3** miner for **DERO** — 0% dev fee. Binaries are built on GitHub runners
-            **without a GPU**, so verify on your card before relying on one:
-            `./openastronv_v3 --verify-recovered-gpu-parity`.
+      - name: Create draft release
+        run: |
+          set -euo pipefail
+          if gh release view "$VER" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $VER already exists" >&2
+            exit 1
+          fi
+          cat > release-notes.md <<'EOF'
+          CUDA AstroBWTv3 miner for DERO with a 0% developer fee.
 
-            **Verified assets** (NVIDIA; tested at parity locally on an RTX 4070):
-            - `Dirtybird-CUDA-Miner-linux-amd64-*.tar.gz` — Linux x86-64 (Ada `sm_89`).
-            - `Dirtybird-CUDA-Miner-windows-wsl-*.zip` — same Linux binary, launched on Windows via WSL2.
+          - Recovered-engine comparator improvement: +1.51% in paired RTX 4070 testing.
+          - Safe 4096 default batch below the 8 GB resource cliff.
+          - Native Windows x64 plus Linux amd64, Linux arm64, WSL2, and HiveOS/MMPOS packages.
+          - Linux/Windows x64 fatbins: sm_86, sm_89, sm_90. Linux arm64: sm_87, sm_90.
 
-            **Rig packages** (bundle their runtime libs in `lib/` with an `$ORIGIN/lib` rpath, so they
-            start on a bare rig; built on Ubuntu 22.04 / glibc 2.35):
-            - `dirtybird-cuda-miner-*.hiveos_mmpos.amd64.tar.gz` — HiveOS/MMPOS custom miner (stats verified).
-            - `Dirtybird-CUDA-Miner-linux-arm64-*.tar.gz` — NVIDIA arm64 (Jetson `sm_87` + GH200 `sm_90`);
-              build-only (no arm64 GPU here to verify). Present only if the arm64 build job succeeded.
+          GitHub-hosted builders have no NVIDIA GPU. CPU vectors and package smoke tests run in CI;
+          the exact native Windows draft asset is GPU parity-tested on an RTX 4070 before publication.
+          Run `openastronv_v3 --verify-recovered-gpu-parity` on your own GPU before relying on a build.
 
-            **Not supported:** macOS — Apple has no CUDA and no NVIDIA GPUs. Rigs older than glibc 2.35
-            build from source.
-
-# Verify correctness on a CUDA GPU before relying on a release:
-#   bash build.sh && ./bin/openastronv_v3 --verify-recovered-gpu-parity
+          macOS and Android are not provided because current NVIDIA CUDA does not support those targets.
+          EOF
+          gh release create "$VER" dist/* --repo "$GITHUB_REPOSITORY" --draft --verify-tag --title "$VER" --generate-notes --notes-file release-notes.md

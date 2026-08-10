@@ -24,10 +24,15 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <io.h>
 #pragma comment(lib, "ws2_32.lib")
 typedef SOCKET socket_t;
 #define SOCKET_INVALID INVALID_SOCKET
 #define CLOSE_SOCKET closesocket
+#define isatty _isatty
+#define popen _popen
+#define pclose _pclose
+#define localtime_r(timer, result) (localtime_s((result), (timer)) == 0 ? (result) : nullptr)
 #else
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -43,7 +48,6 @@ typedef int socket_t;
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #endif
-#include <unistd.h>   // isatty() for --color auto
 
 #ifdef _WIN32
 #define COL_GREEN   ""
@@ -72,7 +76,9 @@ static inline const char* CC(const char* code) { return g_color_enabled ? code :
 
 // Miner identity shown in the startup banner.
 #define MINER_NAME   "derocuda"
-#define MINER_VER    "1.0"
+#ifndef MINER_VER
+#define MINER_VER    "dev"
+#endif
 #define MINER_AUTHOR "derocuda"
 
 // "DD-MM-YYYY HH:MM:SS" timestamp prefix (astronv-style logs).
@@ -154,6 +160,12 @@ static const char* engine_cli_name(GPUEngineMode mode) {
     return "unknown";
 }
 
+static int engine_default_batch(GPUEngineMode mode) {
+    if (mode == GPUEngineMode::Recovered) return 4096;
+    if (mode == GPUEngineMode::Staged) return 2954;
+    return 96;
+}
+
 static const char* engine_banner_desc(GPUEngineMode mode) {
     switch (mode) {
         case GPUEngineMode::Exact: return "official-compatible exact path";
@@ -187,6 +199,7 @@ static void print_usage(const char* argv0) {
     std::printf("  --verify-staged-gpu-parity  Compare the staged GPU path to the exact oracle\n");
     std::printf("  --trace-dero INPUT\n");
     std::printf("  --replay-submit FILE\n");
+    std::printf("  --version\n");
     std::printf("  -h, --help\n");
 }
 
@@ -914,9 +927,8 @@ static void batch_cache_write(const std::string& gpu_name, int batch) {
 static int gpu_autotune_batch(int device_id, GPUEngineMode engine, size_t total_mem, size_t free_mem) {
     const size_t ph = per_hash_bytes();
     // Ceiling from TOTAL VRAM: cudaMemGetInfo "free" under-reports what cudaMalloc can reclaim from
-    // the driver reserve, so a free-based ceiling lands too low. The 0.88 factor puts the top
-    // candidate at our ~4224 peak on an 8GB card (just below the refine cliff), so the tune never
-    // grinds the slow cliffed batches. Round to nearest 128.
+    // the driver reserve, so a free-based ceiling lands too low. The 0.85 factor puts the top
+    // candidate near the safe 4096 peak on an 8GB card. Round to nearest 128.
     int ceiling = (int)((double)total_mem * 0.85 / (double)ph);  // ~4096 on 8GB: keep the top candidate below the exact-tiny resource cliff (~4128+) so the tune never grinds a cliffed batch
     ceiling = ((ceiling + 64) / 128) * 128;
     if (ceiling < 512) ceiling = 512;
@@ -958,7 +970,7 @@ static int gpu_autotune_batch(int device_id, GPUEngineMode engine, size_t total_
         // keep the larger, astronv-like batch (more VRAM, same hashrate).
         if (khs > best_khs * 1.05) { best_khs = khs; best_batch = bs; }
     }
-    return best_batch > 0 ? best_batch : 4224;
+    return best_batch > 0 ? best_batch : 4096;
 }
 
 // astronv-style startup banner + GPU enumeration.
@@ -1014,11 +1026,13 @@ int main(int argc, char** argv) {
     bool verify_recovered_gpu_parity = false;
     bool verify_staged_gpu_parity = false;
     bool show_help = false;
+    bool show_version = false;
     int bench_iters = 0;
     int bench_probe_iters = 0;
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         if (arg == "-h" || arg == "--help") show_help = true;
+        else if (arg == "--version") show_version = true;
         else if (arg == "-w" && i+1 < argc) g_config.wallet = argv[++i];
         else if (arg == "-d" && i+1 < argc) { std::string addr = argv[++i]; size_t colon = addr.rfind(':'); if (colon != std::string::npos) { g_config.pool_host = addr.substr(0, colon); g_config.pool_port = std::atoi(addr.substr(colon+1).c_str()); } else g_config.pool_host = addr; }
         else if ((arg == "-b" || arg == "--batch-size") && i+1 < argc) g_config.batch_size = std::max(1, std::atoi(argv[++i]));
@@ -1061,6 +1075,10 @@ int main(int argc, char** argv) {
     }
     if (show_help) {
         print_usage(argc > 0 ? argv[0] : "openastronv_v3");
+        return 0;
+    }
+    if (show_version) {
+        std::printf("%s %s\n", MINER_NAME, MINER_VER);
         return 0;
     }
     if (g_config.staged_subbatch <= 0) g_config.staged_subbatch = 32;
@@ -1202,8 +1220,7 @@ int main(int argc, char** argv) {
     {
         const size_t ph = per_hash_bytes();
         const bool tunable = (g_config.gpu_engine == GPUEngineMode::Recovered || g_config.gpu_engine == GPUEngineMode::Staged);
-        const int eng_default = (g_config.gpu_engine == GPUEngineMode::Recovered) ? 4224
-                              : (g_config.gpu_engine == GPUEngineMode::Staged) ? 2954 : 96;
+        const int eng_default = engine_default_batch(g_config.gpu_engine);
         const char* d = CC(UI_DIM); const char* r = CC(UI_RESET);
         for (size_t i = 0; i < gpus.size(); ++i) {
             int b = g_config.batch_size;   // 0 unless -b given
@@ -1211,8 +1228,8 @@ int main(int argc, char** argv) {
                 b = batch_cache_read(gpus[i].name);
                 if (b <= 0) { b = gpu_autotune_batch(gpus[i].device_id, g_config.gpu_engine, gpus[i].total_mem, gpus[i].free_mem); batch_cache_write(gpus[i].name, b); }
             }
-            batches[i] = b;   // 0 lets gpu_create_context apply the engine default
             const int eff_b = b > 0 ? b : eng_default;
+            batches[i] = eff_b;
             printf("%s%s%s GPU #%d auto detect batch size %d\n", d, ts().c_str(), r, gpus[i].device_id, eff_b);
             printf("%s%s%s GPU #%d consuming %.0fMB\n", d, ts().c_str(), r, gpus[i].device_id, (double)eff_b * (double)ph / (1024.0 * 1024.0));
         }
