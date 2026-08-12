@@ -24,7 +24,21 @@ VERSION="${DIRTYBIRD_VERSION:-dev}"
 # Expand CUDA_ARCH (comma-separated, e.g. "sm_87,sm_90") into nvcc -gencode flags.
 GENCODE=""
 IFS=',' read -ra _archs <<< "$ARCH"
-for a in "${_archs[@]}"; do n="${a#sm_}"; GENCODE="$GENCODE -gencode arch=compute_${n},code=sm_${n}"; done
+_highest=""
+for a in "${_archs[@]}"; do
+  n="${a#sm_}"
+  GENCODE="$GENCODE -gencode arch=compute_${n},code=sm_${n}"
+  # Track the numerically highest arch; the list is not required to be sorted.
+  if [ -z "$_highest" ] || [ "$n" -gt "$_highest" ]; then _highest="$n"; fi
+done
+# ...and emit PTX for the newest one. `code=sm_N` alone is SASS only, so a GPU
+# newer than anything in the list finds no usable kernel image and the miner dies
+# at startup rather than falling back. Keeping one virtual target lets the driver
+# JIT for future architectures; it compiles once and the driver caches the result.
+# The CMake path already does this implicitly -- a bare "86" in
+# CMAKE_CUDA_ARCHITECTURES means real AND virtual -- which is why the Windows
+# binaries carried PTX and the Linux/HiveOS ones did not.
+[ -n "$_highest" ] && GENCODE="$GENCODE -gencode arch=compute_${_highest},code=compute_${_highest}"
 OUT="${OUT:-./bin/openastronv_v3}"
 TMP="$OUT.new"
 mkdir -p ./obj "$(dirname "$OUT")"

@@ -5,7 +5,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-set(CMAKE_CUDA_ARCHITECTURES "86;89;90" CACHE STRING "CUDA architectures")
+# Bare numbers (not "-real") on purpose: CMake emits both SASS and PTX for each,
+# so the binary keeps a virtual target and a driver can JIT for an architecture
+# newer than anything listed here. 120 is Blackwell / RTX 50-series and needs
+# CUDA >= 12.8 to compile; older toolkits will reject it.
+set(CMAKE_CUDA_ARCHITECTURES "86;89;90;120" CACHE STRING "CUDA architectures")
 set(DIRTYBIRD_VERSION "dev" CACHE STRING "Miner version shown by --version")
 
 if(WIN32)

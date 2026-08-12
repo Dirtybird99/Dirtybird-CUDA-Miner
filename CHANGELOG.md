@@ -3,6 +3,19 @@
 The format follows [Keep a Changelog](https://keepachangelog.com); this project uses semantic
 versioning.
 
+## v0.1.6 — 2026-08-11
+
+- Added Blackwell / RTX 50-series (`sm_120`) support and raised the build toolkit to CUDA 12.9.
+- `build.sh` now emits PTX for the newest architecture in `CUDA_ARCH`. It previously passed only
+  `code=sm_N`, which is SASS with no virtual target, so the Linux and HiveOS binaries could not run
+  on any GPU newer than the newest one compiled in — the driver found no kernel image and the miner
+  died at startup. Confirmed with `cuobjdump --list-ptx` against the published v0.1.5 asset, which
+  reported "No PTX file found"; the Windows binaries were unaffected because a bare entry in
+  `CMAKE_CUDA_ARCHITECTURES` already emits both real and virtual.
+- Stayed on the CUDA 12.x line deliberately. CUDA 13 is not published for Ubuntu 20.04, and the
+  HiveOS artifact has to build in a focal container to hold its glibc 2.31 floor; 12.x also keeps
+  minor-version compatibility so the driver requirement on existing rigs does not move.
+
 ## v0.1.5 — 2026-08-11
 
 - Built the amd64 packages inside an Ubuntu 20.04 container, putting the glibc floor at 2.31.
