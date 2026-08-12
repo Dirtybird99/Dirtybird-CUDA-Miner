@@ -105,14 +105,32 @@ have no GPU, so verify on your own card before relying on a build:
 | `…-win64-<tag>.zip` | Native Windows x64 (`sm_86`, `sm_89`, `sm_90`) | verified on an RTX 4070 |
 | `…-windows-wsl-<tag>.zip` | Windows via WSL2 (`sm_86`, `sm_89`, `sm_90`) | GPU path verified locally |
 | `…-linux-arm64-<tag>.tar.gz` | NVIDIA arm64 (Jetson `sm_87`, GH200 `sm_90`) | build-only; not verified |
-| `dirtybird-cuda-miner-<tag>.hiveos_mmpos.amd64.tar.gz` | HiveOS / MMPOS | stats verified |
+| `dirtybird-cuda-miner-<tag>.hiveos_mmpos.amd64.tar.gz` | HiveOS / MMPOS | loads and parses stats in CI; not yet run on a rig |
 | `SHA256SUMS.txt` and source archives | — | — |
 
 The Linux, WSL, HiveOS, and arm64 packages carry their runtime libraries (`libssl`, `libcrypto`,
 `libstdc++`) in a `lib/` directory with an `$ORIGIN/lib` rpath, so the binary starts on a bare rig.
-CUDA is linked statically; the NVIDIA driver supplies `libcuda`. Binaries are built on Ubuntu 22.04
-(glibc 2.35); older systems should build from source. macOS is not supported, because Apple machines
-have no CUDA and no NVIDIA GPU.
+CUDA is linked statically; the NVIDIA driver supplies `libcuda`. macOS is not supported, because
+Apple machines have no CUDA and no NVIDIA GPU.
+
+The amd64 packages are built inside an Ubuntu 20.04 container, so the binary and its bundled
+libraries need no glibc newer than **2.31** — the version HiveOS rigs ship. Release CI extracts the
+HiveOS tarball and runs it in that same container, so a build that would be rejected at load time on
+a rig fails the release instead. The arm64 package is still built on Ubuntu 22.04 (glibc 2.35).
+
+### HiveOS / MMPOS install
+
+Add a custom miner in the flight sheet:
+
+- **Miner name** — `dirtybird-cuda`. It must match `CUSTOM_NAME` in `h-manifest.conf`, which is also
+  the top-level directory inside the tarball; HiveOS will not find the miner otherwise.
+- **Installation URL** — the `…hiveos_mmpos.amd64.tar.gz` asset from a release.
+- **Hash algorithm** — `astrobwt`.
+- **Wallet and worker template** — `%WAL%.%WORKER_NAME%`.
+
+`h-stats.sh` parses the miner's status line for hashrate, accepted/rejected miniblocks, uptime and
+per-GPU hashrate and temperature; there is no stats API to poll. `hiveos/test-h-stats.sh` covers that
+parser and runs in CI against both the repo copy and the packaged one.
 
 To cut a release, push a signed annotated tag. CI builds a draft release so its exact native Windows
 binary can be GPU-tested before publication:
