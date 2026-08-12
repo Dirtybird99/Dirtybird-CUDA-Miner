@@ -53,6 +53,12 @@ jobs:
     # off the same nvcc link, so they inherit the wider compatibility for free.
     container:
       image: ubuntu:20.04
+    # Inside a container the runner cannot assume bash exists, so `run` steps
+    # default to `sh -e` -- dash on Ubuntu, which has no `set -o pipefail`, no
+    # `[[ ]]`, and no process substitution. The packaging step needs all three.
+    defaults:
+      run:
+        shell: bash
     env:
       VER: ${{ needs.metadata.outputs.version }}
       # focal's apt pulls tzdata transitively; without this a dependency prompt
