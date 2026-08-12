@@ -1,0 +1,129 @@
+name: Security
+
+# Brings this repo to parity with the C and Zig miners, which have carried these
+# checks for a while.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  secret-scan:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Gitleaks walks history, not just the tip: a key that was committed and
+          # later removed is still a leaked key.
+          fetch-depth: 0
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  codeql:
+    name: CodeQL Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: c-cpp
+          build-mode: manual
+          queries: security-and-quality
+
+      # Scope, stated plainly: CodeQL has no CUDA extractor, so the device code in
+      # src/gpu/*.cu and *.cuh is NOT analyzed. What this covers is the host side --
+      # src/main.cpp, which is where the network parsing, the pool protocol, and the
+      # argument handling live, and therefore where the untrusted input is.
+      #
+      # It is compiled here with plain g++ rather than nvcc so CodeQL can observe
+      # the compiler invocations; autobuild cannot drive build.sh.
+      - name: Install host-side dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++ libssl-dev
+
+      - name: Compile the host translation unit for CodeQL
+        run: |
+          set -euo pipefail
+          # This needs no CUDA headers at all: src/gpu/astrobwt_gpu.cuh is a pure
+          # host-side interface (cstdint/vector/string), so the whole host TU parses
+          # under stock g++. Verified in a clean ubuntu container before this was
+          # committed. -fsyntax-only skips the link, so no CUDA runtime is required.
+          # HAS_OPENSSL and MINER_VER mirror what build.sh passes to nvcc.
+          #
+          # No `|| true` here on purpose: it compiles cleanly today, so a failure is
+          # a real regression and should be red rather than a half-populated database.
+          g++ -std=c++17 -fsyntax-only \
+            -DHAS_OPENSSL -DMINER_VER='"codeql"' \
+            -Isrc -Iextern/libsais \
+            src/main.cpp
+          gcc -O2 -c extern/libsais/libsais.c -Iextern/libsais -o /tmp/libsais.o
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:c-cpp"
+
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Only meaningful on a pull request -- it diffs the PR's manifests against the
+    # base. It reports as "Skipped" on push builds, which is expected.
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: critical
+
+  check-binaries:
+    name: Check for Binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Fail if binary artifacts are tracked
+        run: |
+          # A miner is exactly the kind of project people are right to be wary of
+          # downloading, so the repo should contain no opaque prebuilt objects.
+          bad=$(git ls-files \
+            | grep -iE '\.(exe|dll|so|dylib|a|obj|pdb|lib|zip|tar|gz|xz|bz2|7z|profdata|profraw)$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::Binary/artifact files are tracked in the repo:"; echo "$bad"; exit 1
+          fi
+          echo "OK: no tracked binary artifacts."
+      - name: Warn on large files
+        run: |
+          large=$(git ls-files | while read -r f; do
+            [ -f "$f" ] || continue
+            s=$(stat -c%s "$f")
+            [ "$s" -gt 10485760 ] && echo "$f ($((s / 1048576))MB)"
+          done)
+          if [ -n "$large" ]; then
+            echo "::warning::Files larger than 10MB are tracked:"; echo "$large"
+          else
+            echo "OK: nothing tracked over 10MB."
+          fi
