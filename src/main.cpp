@@ -89,6 +89,19 @@ static std::string ts() {
 }
 
 // CPU brand string from /proc/cpuinfo (best-effort, display only).
+#if defined(__x86_64__) || defined(__i386__)
+#include <cpuid.h>
+// GCC did not accept __builtin_cpu_supports("sha") until 11, and Ubuntu 20.04 --
+// the glibc floor the HiveOS package is built against -- ships GCC 9. Reading
+// the feature bit directly keeps the banner compiling on every toolchain that
+// can build this miner, including a from-source build on an older distro.
+static bool cpu_has_sha() {
+    unsigned int eax, ebx, ecx, edx;
+    if (!__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) return false;
+    return (ebx & (1u << 29)) != 0;  // CPUID.(EAX=7,ECX=0):EBX[29] -- SHA extensions
+}
+#endif
+
 static std::string cpu_brand() {
     std::ifstream f("/proc/cpuinfo"); std::string line;
     while (std::getline(f, line)) {
@@ -998,7 +1011,7 @@ static void print_startup_banner(const std::vector<GPUDeviceInfo>& gpus) {
 #if defined(__x86_64__) || defined(__i386__)
     line(std::string("| avx2: ") + yn(__builtin_cpu_supports("avx2")));
     line(std::string("| avx512: ") + yn(__builtin_cpu_supports("avx512f")));
-    line(std::string("| sha: ") + yn(__builtin_cpu_supports("sha")));
+    line(std::string("| sha: ") + yn(cpu_has_sha()));
 #else
     line("| avx2: n/a (non-x86)");
     line("| avx512: n/a (non-x86)");

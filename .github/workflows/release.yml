@@ -83,23 +83,16 @@ jobs:
           # jq: the packaged mmp-stats.sh needs it, and test-h-stats.sh only
           # validates the emitted JSON when it is present.
           apt-get install -y --no-install-recommends \
-            build-essential curl libssl-dev zip jq software-properties-common
-          # focal's GCC 9 rejects __builtin_cpu_supports("sha"), which the startup
-          # banner in src/main.cpp probes. GCC 10 rejects it too; 11 is the first
-          # that accepts it, and CUDA 12.5 supports a host GCC up to 13. Verified
-          # in an ubuntu:20.04 container: 9.4 and 10.5 fail, 11.5 compiles, and
-          # glibc stays 2.31 -- a newer compiler does not raise the runtime floor.
-          add-apt-repository -y ppa:ubuntu-toolchain-r/test
+            build-essential curl libssl-dev zip jq
+          # Focal's stock GCC 9 is the host compiler. It only became viable once
+          # the startup banner stopped calling __builtin_cpu_supports("sha"),
+          # which GCC did not accept until 11 -- reading the CPUID bit directly
+          # avoids pulling a whole extra toolchain in here for one banner line.
           # Same repo layout the arm64 job uses, pointed at focal/x86_64.
           curl -fsSLO https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-keyring_1.1-1_all.deb
           dpkg -i cuda-keyring_1.1-1_all.deb
           apt-get update
-          apt-get install -y --no-install-recommends \
-            gcc-11 g++-11 cuda-nvcc-12-5 cuda-cudart-dev-12-5
-          # build.sh compiles libsais with `gcc` and lets nvcc pick the default
-          # host compiler, so point both at 11 rather than threading -ccbin through.
-          update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-11 110 \
-                              --slave   /usr/bin/g++ g++ /usr/bin/g++-11
+          apt-get install -y --no-install-recommends cuda-nvcc-12-5 cuda-cudart-dev-12-5
           # build.sh resolves the toolkit with `command -v nvcc`, falling back to
           # $CUDA_HOME. apt puts nvcc under /usr/local and sets neither.
           echo "/usr/local/cuda-12.5/bin" >> "$GITHUB_PATH"
