@@ -46,20 +46,47 @@ jobs:
   build-amd64:
     needs: metadata
     runs-on: ubuntu-22.04
+    # HiveOS rigs run Ubuntu 20.04 (glibc 2.31). Built on the 22.04 runner, the
+    # binary and its bundled libssl/libcrypto/libstdc++ demanded GLIBC_2.32+ and
+    # a rig refused to load them. Building inside a 20.04 container puts the
+    # floor at the oldest glibc the rigs ship; the desktop and WSL packages come
+    # off the same nvcc link, so they inherit the wider compatibility for free.
+    container:
+      image: ubuntu:20.04
     env:
       VER: ${{ needs.metadata.outputs.version }}
+      # focal's apt pulls tzdata transitively; without this a dependency prompt
+      # blocks until the job times out instead of failing fast.
+      DEBIAN_FRONTEND: noninteractive
+    timeout-minutes: 90
     steps:
+      # actions/checkout executes inside the job container, and the bare
+      # ubuntu:20.04 image ships no git -- so the checkout cannot run at all
+      # until it exists. The rest of the toolchain is installed after the
+      # source is present.
+      - name: Install git (container ships none)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Install CUDA toolkit
-        uses: Jimver/cuda-toolkit@8022558310ea543e35132143092835585f60e628 # v0.2.21
-        with:
-          cuda: '12.5.1'
-          method: network
-          sub-packages: '["nvcc", "cudart-dev"]'
-
-      - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev zip
+      - name: Install CUDA 12.5 toolkit and build dependencies
+        run: |
+          set -euo pipefail
+          # jq: the packaged mmp-stats.sh needs it, and test-h-stats.sh only
+          # validates the emitted JSON when it is present.
+          apt-get install -y --no-install-recommends \
+            build-essential curl libssl-dev zip jq
+          # Same repo layout the arm64 job uses, pointed at focal/x86_64.
+          curl -fsSLO https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-keyring_1.1-1_all.deb
+          dpkg -i cuda-keyring_1.1-1_all.deb
+          apt-get update
+          apt-get install -y --no-install-recommends cuda-nvcc-12-5 cuda-cudart-dev-12-5
+          # build.sh resolves the toolkit with `command -v nvcc`, falling back to
+          # $CUDA_HOME. apt puts nvcc under /usr/local and sets neither.
+          echo "/usr/local/cuda-12.5/bin" >> "$GITHUB_PATH"
+          echo "CUDA_HOME=/usr/local/cuda-12.5" >> "$GITHUB_ENV"
 
       - name: Build Ampere, Ada, and Hopper fatbin
         run: SKIP_SELFTEST=1 CUDA_ARCH=sm_86,sm_89,sm_90 DIRTYBIRD_VERSION="$VER" bash build.sh
@@ -76,13 +103,33 @@ jobs:
           set -euo pipefail
           mkdir -p dist
 
+          # Everything the binary needs that the host will not already have,
+          # discovered from ldd rather than named: the OpenSSL soname tracks the
+          # build distribution (libssl.so.1.1 on focal, libssl.so.3 on jammy), so
+          # a hardcoded list silently stops matching when the floor moves.
+          should_bundle() {
+            case "$1" in
+              linux-vdso.so.1|linux-gate.so.1|ld-linux*.so.*|libc.so.*|libm.so.*|libpthread.so.*|librt.so.*|libdl.so.*|libutil.so.*|libresolv.so.*|libnsl.so.*|libanl.so.*) return 1 ;;
+              *) return 0 ;;
+            esac
+          }
+
           LIN="Dirtybird-CUDA-Miner-linux-amd64-${VER}"
           mkdir -p "dist/${LIN}/lib"
           cp bin/openastronv_v3 README.md LICENSE THIRD-PARTY-LICENSES.md "dist/${LIN}/"
-          for LIB in libssl.so.3 libcrypto.so.3 libstdc++.so.6 libgcc_s.so.1; do
-            PATHNAME=$(ldd bin/openastronv_v3 | awk -v lib="$LIB" '$1 == lib { print $3; exit }')
-            test -n "$PATHNAME" && test -f "$PATHNAME"
-            cp -L "$PATHNAME" "dist/${LIN}/lib/"
+          while IFS= read -r line; do
+            if [[ "$line" =~ ^[[:space:]]*([^[:space:]]+)[[:space:]]+\=\>[[:space:]]+([^[:space:]]+)[[:space:]]+\(0x[0-9a-fA-F]+\)$ ]]; then
+              # basename before the filter: an ldd entry spelled
+              # "lib64/ld-linux-x86-64.so.2" slips past the denylist otherwise and
+              # gets installed to lib//lib64/..., which fails the copy.
+              SO="$(basename "${BASH_REMATCH[1]}")"
+              should_bundle "$SO" || continue
+              install -m 0644 "$(readlink -f "${BASH_REMATCH[2]}")" "dist/${LIN}/lib/$SO"
+            fi
+          done < <(ldd bin/openastronv_v3)
+          # The soname is free to move; the library still has to be there.
+          for WANT in libssl libcrypto libstdc++ libgcc_s; do
+            ls "dist/${LIN}/lib" | grep -q "^${WANT}\." || { echo "not bundled: $WANT" >&2; exit 1; }
           done
 
           WSL="Dirtybird-CUDA-Miner-windows-wsl-${VER}"
@@ -106,6 +153,30 @@ jobs:
           (cd dist && zip -qr "${WSL}.zip" "$WSL")
           tar -C dist -czf "dist/dirtybird-cuda-miner-${VER}.hiveos_mmpos.amd64.tar.gz" "$HIVE"
           rm -rf "dist/${LIN}" "dist/${WSL}" "dist/${HIVE}"
+
+      # A rig rejects the miner at load time, and the bundled libs plus the
+      # $ORIGIN/lib rpath only exist once packaging has run -- so the tarball
+      # itself has to be executed, not just the build-tree binary. Still inside
+      # the 20.04 container, and deliberately without LD_LIBRARY_PATH, so this is
+      # a real glibc 2.31 load resolved through the rpath alone.
+      # --verify-dero-vectors is CPU-only (ci.yml runs it on a GPU-less runner);
+      # the GPU parity and hashrate gates stay skipped via SKIP_SELFTEST=1.
+      - name: Verify the packaged HiveOS tarball loads on glibc 2.31
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/hive-verify
+          mkdir -p /tmp/hive-verify
+          tar -xzf "dist/dirtybird-cuda-miner-${VER}.hiveos_mmpos.amd64.tar.gz" -C /tmp/hive-verify
+          BIN="$(find /tmp/hive-verify -type f -name openastronv_v3 -print -quit)"
+          test -n "$BIN"
+          test "$("$BIN" --version)" = "derocuda $VER"
+          "$BIN" --verify-dero-vectors
+          # Exercise the SHIPPED parser, not the repo copy -- packaging could drop
+          # or mangle it and nothing else would notice. The test injects its own
+          # manifest, so this covers h-stats.sh itself; the packaged manifest's
+          # CUSTOM_VERSION is asserted separately in the packaging step above.
+          # The test is deliberately not packaged: rigs do not need it.
+          bash hiveos/test-h-stats.sh /tmp/hive-verify/dirtybird-cuda
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

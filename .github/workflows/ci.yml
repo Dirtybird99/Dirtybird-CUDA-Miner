@@ -25,7 +25,7 @@ jobs:
           sub-packages: '["nvcc", "cudart-dev"]'
 
       - name: Install build and shell dependencies
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev shellcheck
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev shellcheck jq
 
       - name: Check shell scripts
         run: |
@@ -33,6 +33,12 @@ jobs:
             bash -n "$file"
             shellcheck --severity=error "$file"
           done < <(git ls-files -z '*.sh')
+
+      # The HiveOS dashboard reads whatever h-stats.sh puts in $stats, and the
+      # miner has no stats API to fall back on -- a silent parser regression
+      # shows up as an N/A hashrate on a rig and nowhere else.
+      - name: Test the HiveOS stats parser
+        run: bash hiveos/test-h-stats.sh
 
       - name: Build (compile-only; GPU parity/bench gate is skipped without a GPU)
         run: SKIP_SELFTEST=1 CUDA_ARCH=sm_89 DIRTYBIRD_VERSION=dev bash build.sh
