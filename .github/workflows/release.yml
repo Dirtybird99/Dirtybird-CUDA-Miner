@@ -77,7 +77,7 @@ jobs:
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Install CUDA 12.5 toolkit and build dependencies
+      - name: Install CUDA 12.9 toolkit and build dependencies
         run: |
           set -euo pipefail
           # jq: the packaged mmp-stats.sh needs it, and test-h-stats.sh only
@@ -92,14 +92,14 @@ jobs:
           curl -fsSLO https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-keyring_1.1-1_all.deb
           dpkg -i cuda-keyring_1.1-1_all.deb
           apt-get update
-          apt-get install -y --no-install-recommends cuda-nvcc-12-5 cuda-cudart-dev-12-5
+          apt-get install -y --no-install-recommends cuda-nvcc-12-9 cuda-cudart-dev-12-9
           # build.sh resolves the toolkit with `command -v nvcc`, falling back to
           # $CUDA_HOME. apt puts nvcc under /usr/local and sets neither.
-          echo "/usr/local/cuda-12.5/bin" >> "$GITHUB_PATH"
-          echo "CUDA_HOME=/usr/local/cuda-12.5" >> "$GITHUB_ENV"
+          echo "/usr/local/cuda-12.9/bin" >> "$GITHUB_PATH"
+          echo "CUDA_HOME=/usr/local/cuda-12.9" >> "$GITHUB_ENV"
 
-      - name: Build Ampere, Ada, and Hopper fatbin
-        run: SKIP_SELFTEST=1 CUDA_ARCH=sm_86,sm_89,sm_90 DIRTYBIRD_VERSION="$VER" bash build.sh
+      - name: Build Ampere, Ada, Hopper, and Blackwell fatbin
+        run: SKIP_SELFTEST=1 CUDA_ARCH=sm_86,sm_89,sm_90,sm_120 DIRTYBIRD_VERSION="$VER" bash build.sh
 
       - name: Smoke test
         run: |
@@ -255,9 +255,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install CUDA toolkit
-        uses: Jimver/cuda-toolkit@8022558310ea543e35132143092835585f60e628 # v0.2.21
+        uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d # v0.2.36
         with:
-          cuda: '12.5.1'
+          cuda: '12.9.1'
           method: network
           sub-packages: '["nvcc", "cudart", "visual_studio_integration"]'
 
@@ -271,7 +271,7 @@ jobs:
           cmake -S . -B build-release -G "Visual Studio 17 2022" -A x64 `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-windows-static `
-            -DCMAKE_CUDA_ARCHITECTURES="86;89;90" `
+            -DCMAKE_CUDA_ARCHITECTURES="86;89;90;120" `
             -DDIRTYBIRD_VERSION="$env:VER"
           cmake --build build-release --config Release --parallel 2
 

@@ -113,6 +113,11 @@ The Linux, WSL, HiveOS, and arm64 packages carry their runtime libraries (`libss
 CUDA is linked statically; the NVIDIA driver supplies `libcuda`. macOS is not supported, because
 Apple machines have no CUDA and no NVIDIA GPU.
 
+GPU coverage is `sm_86` (Ampere), `sm_89` (Ada), `sm_90` (Hopper) and `sm_120` (Blackwell /
+RTX 50-series) as compiled SASS, plus PTX for the newest of those so a driver can JIT for any
+future architecture. The build toolkit is CUDA 12.9; the 12.x line is kept on purpose, because
+CUDA 13 is not published for Ubuntu 20.04 and the HiveOS package must build there.
+
 The amd64 packages are built inside an Ubuntu 20.04 container, so the binary and its bundled
 libraries need no glibc newer than **2.31** — the version HiveOS rigs ship. Release CI extracts the
 HiveOS tarball and runs it in that same container, so a build that would be rejected at load time on
